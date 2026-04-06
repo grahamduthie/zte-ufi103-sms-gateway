@@ -121,11 +121,11 @@ are sent back as SMS messages.
 - Keep replies under 160 characters
 
 ## Checking the Gateway Status
-- On your phone connected to the same WiFi: http://172.16.10.226:8080/
+- On your phone connected to the same WiFi: http://172.16.10.226/ (port 80, password: mfm)
 - Dashboard shows: signal strength, messages sent/received, recent texts
 
 ## Sending a Text from the Web UI
-1. Open http://172.16.10.226:8080/compose
+1. Open http://172.16.10.226/compose
 2. Enter phone number (e.g. +447700000001)
 3. Type your message (max 160 chars)
 4. Click Send

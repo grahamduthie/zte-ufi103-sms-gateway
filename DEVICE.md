@@ -158,7 +158,7 @@ ifconfig rndis0 192.168.100.1 netmask 255.255.255.0 up
 | WiFi IP (dynamic) | 172.16.10.x (DHCP from router) |
 | USB (rndis0) IP | 192.168.100.1 |
 | Host USB access | `sudo ip addr add 192.168.100.2/24 dev enx02030f556538` |
-| Web UI | http://192.168.100.1:8080/ (over rndis0 or WiFi) |
+| Web UI | http://192.168.100.1/ (port 80, over rndis0 or WiFi) |
 
 ## Running Processes (Key)
 
@@ -193,17 +193,22 @@ processor and the modem processor:
 RILD uses **QMI WMS** (over `/dev/smd36`) — NOT AT commands — as its primary
 SMS receive path. RILD sets `AT+CNMI=0,0,0,0,0` at boot; with `mt=0` the modem
 routes all incoming SMS via QMI only and does **not** write them to SIM (SM)
-storage. Our gateway overrides this with `AT+CNMI=2,1,0,0,0` (`mt=1`) on every
-poll, causing the modem to write incoming SMS to SM storage AND send `+CMTI`
-notifications. Messages persist on SIM until our gateway reads them with
-`AT+CMGL` and deletes them with `AT+CMGD`.
+storage. Our gateway overrides this with `AT+CNMI=2,1,0,0,0` (`mt=1`) sent
+**once at startup** (via `SetTextMode()` in `main.go`) and re-applied **hourly**
+in `housekeeping.go`. This causes the modem to write incoming SMS to SM storage
+AND send `+CMTI` notifications. Messages persist on SIM until our gateway reads
+them with `AT+CMGL` and deletes them with `AT+CMGD`.
+
+**CRITICAL**: Do NOT send `AT+CNMI` on every poll cycle. RILD reacts by sending
+`AT+CPMS="SM","SM","SM"` — if this lands during an SMS send, it corrupts the PDU
+(Bug 13). Startup + hourly is the correct cadence.
 
 **Key facts for the gateway:**
 - `AT+CNMI=2,1,0,0,0` must be maintained; without it, SM storage stays empty
 - `+CMTI:` URCs DO fire on our fd when `mt=1` is active — `NewMessageCh` in
   `session.go` receives them and triggers an immediate poll
-- RILD sets `AT+CNMI` only at boot (not periodically); there is a theoretical
-  window of ~3–4s between our re-applications — see `SMS_MODEM_ARCHITECTURE.md`
+- RILD sets `AT+CNMI` only at boot (not periodically); the hourly re-apply
+  window is acceptable — see `SMS_MODEM_ARCHITECTURE.md`
 - `com.qualcomm.telephony` replaces the standard Android telephony provider.
   The standard Android SMS database
   (`/data/data/com.android.providers.telephony/databases/mmssms.db`) is
@@ -232,11 +237,12 @@ All AT commands go via `/dev/smd11` through the Go gateway's persistent reader.
 |---------|---------|----------|
 | `AT+CPIN?` | Check SIM lock status | `+CPIN: READY` |
 | `AT+CPMS="SM","SM","SM"` | Set SMS storage to SIM | `+CPMS: "SM",N,20,...` |
-| `AT+CMGF=1` | Set text mode | `OK` |
+| `AT+CMGF=1` | Set text mode (used for receive polling only) | `OK` |
+| `AT+CMGF=0` | Set PDU mode (used for sending) | `OK` |
 | `AT+CMGL="ALL"` | List all messages | `+CMGL: index,"status","sender",,"timestamp"\r\nbody` |
 | `AT+CMGD=index,0` | Delete message by index | `OK` |
-| `AT+CMGS="+number"\r` | Start SMS send (wait for `> `) | `> ` prompt |
-| `<text>\x1a` | Send text + Ctrl-Z | `+CMGS: <ref>` |
+| `AT+CMGS=<tpduLen>\r` | Start PDU SMS send — tpduLen = TPDU octet count (not counting "00" SMSC prefix) | `\r\n> ` prompt (no trailing newline) |
+| `"00"+tpduHex+\x1A` | PDU body + Ctrl-Z — "00" = use SIM's SMSC | `+CMGS: <ref>` or bare `OK` |
 | `AT+CSQ` | Signal quality | `+CSQ: <rssi>,<ber>` |
 | `AT+CREG?` | Network registration | `+CREG: 0,1` (registered) |
 | `AT+COPS?` | Operator name | `+COPS: 0,0,"spusu spusu",7` |

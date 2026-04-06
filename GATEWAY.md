@@ -17,7 +17,7 @@ reply processing, and a web UI. No host PC needed after initial setup.
 │  2. Send queue      → drains pending SMS every 10s                │
 │  3. IMAP IDLE       → persistent connection, instant delivery     │
 │  4. Signal poller   → AT+CSQ/COPS every 30s (for web UI)         │
-│  5. Web server      → HTTP on :8080                               │
+│  5. Web server      → HTTP on :80                                 │
 │  6. WiFi watchdog   → checks wlan0 IP every 45s, soft-reconnects │
 │  7. Housekeeping    → hourly log rotation, WAL checkpoint, pruning│
 │                                                                    │
@@ -53,9 +53,12 @@ On this Qualcomm MSM8916 device, RILD uses **QMI WMS** (over `/dev/smd36`,
 not AT commands) as its primary SMS channel. RILD sets `AT+CNMI=0,0,0,0,0` at
 boot, which with `mt=0` causes the modem to route incoming SMS exclusively via
 QMI — bypassing SIM (SM) storage entirely. Our gateway overrides this by
-sending `AT+CNMI=2,1,0,0,0` on every poll cycle (inside `GetSMSCount`). With
-`mt=1`, incoming SMS are written to SM storage AND the modem sends a `+CMTI`
-unsolicited result code.
+sending `AT+CNMI=2,1,0,0,0` **once at startup** (in `main.go` via
+`SetTextMode()`) and re-applying it **hourly** in `housekeeping.go`. It is NOT
+sent on every poll — doing so triggers RILD to react with `AT+CPMS="SM","SM","SM"`
+on every cycle, which injects bytes into the SMS send window (see Bug 13,
+`BUGS.md`). With `mt=1`, incoming SMS are written to SM storage AND the modem
+sends a `+CMTI` unsolicited result code.
 
 `+CMTI:` notifications DO reach our `/dev/smd11` fd when `mt=1` is active. The
 `readerLoop` detects them and signals `NewMessageCh`, triggering an immediate
@@ -81,13 +84,35 @@ would steal the other's modem replies. The fix is the PID file guard in
 
 ## SMS Send Flow
 
-1. `AT+CMGF=0\r\n` → reset to PDU mode (clears stuck text-input state)
-2. `AT+CMGF=1\r\n` → set text mode, wait for `OK`
-3. `AT+CMGS="+number"\r` → wait for `> ` prompt
-4. `<text>\x1a` → send text + Ctrl-Z, wait for `+CMGS: <ref>`
+Implemented in `sendSMSDirectAT()` in `internal/atcmd/session.go`. Uses PDU
+mode throughout — never text mode (see below for why).
 
-**Key design**: Sequential writes with sleeps between commands. No intermediate
-reads (RILD steals responses). Only reads after the full sequence.
+1. **ESC** → cancel any stuck text-input state from a previous failed send
+2. **`AT+CMGF=0\r\n`** → set PDU mode. RILD reacts by sending
+   `AT+CPMS="SM","SM","SM"`. Wait for channel to go quiet (buffer stops
+   growing for 250ms), then truncate the buffer.
+3. **`AT+CMGS=<tpduLen>\r`** → `tpduLen` is TPDU octet count (NOT counting
+   the `"00"` SMSC prefix). Modem responds with `> `.
+4. **`>` detected via `promptCh`** → `readerLoop` flushes `>` to `respBuf`
+   immediately (without waiting for `\n`) and signals `promptCh`. The send
+   function waits on `promptCh` via `select` — zero polling delay, responds
+   in microseconds.
+5. **`"00" + tpduHex + 0x1A`** → SMSC prefix `"00"` means "use SIM's stored
+   SMSC". `tpduHex` is built by `encodeSMSPDU()` in `pdu.go` (GSM 7-bit
+   encoding). `0x1A` = Ctrl-Z = send.
+6. **Wait up to 35s** for `+CMGS: <ref>` (success), bare `OK` (success,
+   no ref), or `+CMS ERROR` (RILD injection or modem error → retry).
+
+**Why PDU mode**: In text mode (`AT+CMGF=1`) RILD's `AT+CPMS` bytes arrive in
+the text-input window and are silently included in the message — no error, just
+a garbled SMS. In PDU mode (`AT+CMGF=0`) any non-hex injection gives `+CMS
+ERROR: 304` — a clean failure that triggers a retry. See Bug 13 in `BUGS.md`
+and `SMS_MODEM_ARCHITECTURE.md` for full analysis.
+
+**Why `promptCh` is critical**: The modem's `>` prompt is `\r\n> ` — no
+trailing newline. `readerLoop` only flushed to `respBuf` on `\n`, so `>` was
+invisible until RILD happened to follow it with a newline-terminated line (i.e.
+already injected). `promptCh` solves this with an immediate flush + signal.
 
 ## Email Reply Flow (IMAP IDLE → SMS)
 
@@ -298,7 +323,7 @@ sms-gateway/
 │   ├── housekeeping.go    # Log rotation, WAL checkpoint, record pruning
 │   └── wifi_watchdog.go   # Soft WiFi reconnect (no rmmod/insmod)
 ├── internal/
-│   ├── atcmd/session.go   # AT commands, persistent reader, +CMTI detection, SMS send
+│   ├── atcmd/session.go   # AT commands, persistent reader, +CMTI/promptCh detection, PDU SMS send
 │   ├── atcmd/pdu.go       # GSM 7-bit PDU encoding
 │   ├── config/config.go   # JSON config loading + validation
 │   ├── database/db.go     # SQLite operations
@@ -327,15 +352,16 @@ sms-gateway/
 3. **Shared Session** — poller, sender, and signal poller share one `Session`;
    sends block all polling for up to 35 seconds
 4. **`AT+CNMI` override resilience** — RILD sets `mt=0` at boot; we re-apply
-   `AT+CNMI=2,1,0,0,0` on every poll (~every 3–4s). RILD is not observed to
-   reset this periodically, but if it did, a text arriving in the window between
-   re-applications would be missed permanently (see `SMS_MODEM_ARCHITECTURE.md`)
+   `AT+CNMI=2,1,0,0,0` once at startup and hourly in housekeeping. RILD is not
+   observed to reset this periodically (only at boot), so a 60-minute re-apply
+   window is acceptable. If RILD ever did reset it mid-hour, a text arriving in
+   that window would be missed permanently (see `SMS_MODEM_ARCHITECTURE.md`)
 5. **mmssms.db always empty** — Qualcomm's telephony replacement doesn't write
    to the standard Android database; `pollAndroidSMS()` is dead code
 
 ## Testing
 
-111 automated tests across 5 packages:
+130 automated tests across 5 packages:
 
 ```bash
 cd /home/marlowfm/dongle/sms-gateway

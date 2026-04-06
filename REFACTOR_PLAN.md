@@ -409,7 +409,7 @@ changes. Check `mbu.Mailbox.Messages` to know if there are new messages.
 | 17 | Shell injection fix in send_shell.go | ✅ Done 2026-04-05 — deprecated, added input validation (phone number regex, text metachar rejection) |
 | 18 | Input validation in sendSMSDirectAT | ✅ Done 2026-04-05 — rejects empty number, empty text, text >160 chars |
 | 19 | decodeQuotedPrintable multi-byte UTF-8 fix | ✅ Done 2026-04-05 — ParseInt→ParseUint, byte accumulation for UTF-8 |
-| 20 | Automated test suite (103 tests) | ✅ Done 2026-04-05 — config(13), database(25), email(25), atcmd(25), web(15) |
+| 20 | Automated test suite (130 tests) | ✅ Done 2026-04-05 — config(13), database(25), email(25), atcmd(25), web(15); grown to 130 by 2026-04-06 |
 | 21 | Nil AT session handling in web server | ✅ Done 2026-04-05 — handleDashboard and handleStatus check for nil |
 | 22 | Database integrity check | ✅ Done 2026-04-05 — CheckIntegrity() via PRAGMA integrity_check |
 | 23 | Send queue visibility | ✅ Done 2026-04-05 — GetSendQueueStats() returns pending/failed/sent counts |
@@ -422,12 +422,22 @@ changes. Check `mbu.Mailbox.Messages` to know if there are new messages.
 
 ## What NOT to Change
 
-- The persistent reader architecture for polling — it works, just needs the
-  buffer management fixes
-- The sequential-write SMS send approach — it works, just needs its own fd
+- The persistent reader architecture for polling — it works, buffer management
+  fixes are in place
 - The IMAP/SMTP email bridge — already robust with timeouts and error handling
 - The Web UI templates — functional and stable
 - The SIM PIN unlock mechanism — works correctly
+- The PDU mode SMS send with `promptCh` — do not revert to text mode or remove
+  the `promptCh` mechanism. See Bug 13 in `BUGS.md` and `SMS_MODEM_ARCHITECTURE.md`
+  for why this is critical.
+
+## Additional Items Completed (2026-04-06)
+
+| # | Task | Status |
+|---|------|--------|
+| 36 | Bug 13: RILD injection in SMS send | ✅ Fixed — PDU mode (`AT+CMGF=0`), `readerLoop` flushes `>` immediately + signals `promptCh`, PDU written in microseconds before RILD reacts |
+| 37 | AT+CNMI moved from every-poll to startup + hourly | ✅ Fixed — was triggering RILD AT+CPMS on every 2s poll cycle |
+| 38 | Git repository initialised, pushed to GitHub | ✅ Done — https://github.com/grahamduthie/zte-ufi103-sms-gateway (private) |
 
 ---
 

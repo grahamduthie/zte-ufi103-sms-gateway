@@ -40,8 +40,8 @@ go test ./internal/atcmd/... -run TestParseCMGL_ErrorTerminal -v
 | `config` | 13 | Validation, load/save, defaults, malformed input |
 | `database` | 25 | CRUD, send queue, health, concurrency, integrity, WAL |
 | `email` | 25 | Reply cleaning, QP decode, GSM normalisation, auth |
-| `web` | 15 | All endpoints, config save, compose, status |
-| **Total** | **103** | **All passing** ✅ |
+| `web` | 42 | All endpoints, config save, compose, status |
+| **Total** | **130** | **All passing** ✅ (as of 2026-04-06) |
 
 ## Adding New Tests
 

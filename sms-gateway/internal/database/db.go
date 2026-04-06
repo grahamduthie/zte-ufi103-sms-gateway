@@ -682,7 +682,7 @@ func (d *DB) GetConversation(number string, limit int) ([]ThreadMessage, error) 
 			status
 		FROM send_queue
 		WHERE to_number = ?
-		ORDER BY ts DESC
+		ORDER BY ts ASC
 		LIMIT ?
 	`, number, number, limit)
 	if err != nil {

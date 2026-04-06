@@ -661,15 +661,15 @@ func TestConversation_MixedInboundOutbound(t *testing.T) {
 	if len(thread) != 3 {
 		t.Fatalf("expected 3 thread messages, got %d", len(thread))
 	}
-	// Most recent first: "How are you?" (in), "Hello back" (out), "Hi there" (in)
-	if thread[0].Direction != "in" || thread[0].Body != "How are you?" {
-		t.Fatalf("expected most recent to be inbound 'How are you?', got %+v", thread[0])
+	// Chronological order: "Hi there" (in), "Hello back" (out), "How are you?" (in)
+	if thread[0].Direction != "in" || thread[0].Body != "Hi there" {
+		t.Fatalf("expected first to be inbound 'Hi there', got %+v", thread[0])
 	}
 	if thread[1].Direction != "out" || thread[1].Body != "Hello back" {
 		t.Fatalf("expected second to be outbound 'Hello back', got %+v", thread[1])
 	}
-	if thread[2].Direction != "in" || thread[2].Body != "Hi there" {
-		t.Fatalf("expected third to be inbound 'Hi there', got %+v", thread[2])
+	if thread[2].Direction != "in" || thread[2].Body != "How are you?" {
+		t.Fatalf("expected third to be inbound 'How are you?', got %+v", thread[2])
 	}
 }
 

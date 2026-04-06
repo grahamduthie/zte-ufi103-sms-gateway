@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}} — SMS Gateway</title>
+    <link rel="stylesheet" href="/static/pico.min.css">
+    <link rel="icon" href="/static/logo.png">
+    <style>
+        :root { --max-width: 900px; }
+        body { margin: 0; }
+        .topbar {
+            background: #1a1a2e; color: #fff;
+            padding: .5rem 1rem;
+            display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+            position: sticky; top: 0; z-index: 100;
+        }
+        .topbar img { height: 48px; border-radius: 8px; }
+        .topbar .brand { font-weight: 700; font-size: 1.1rem; }
+        .topbar nav { display: flex; gap: .25rem; flex-wrap: wrap; }
+        .topbar nav a {
+            color: rgba(255,255,255,.75); text-decoration: none;
+            padding: .25rem .5rem; border-radius: 4px; font-size: .85rem;
+        }
+        .topbar nav a:hover, .topbar nav a[aria-current="page"] { color: #fff; background: rgba(255,255,255,.15); }
+        main { max-width: var(--max-width); margin: 0 auto; padding: 1rem; }
+        @media (max-width: 600px) {
+            .topbar { padding: .4rem .6rem; }
+            .topbar .brand { display: none; }
+            .topbar nav a { padding: .35rem .5rem; font-size: .95rem; }
+            .topbar img { height: 40px; }
+            main { padding: .75rem .5rem; }
+        }
+        .ts { font-size: .85em; color: #666; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: .8em; }
+        .badge-fwd { background: #d4edda; color: #155724; }
+        .badge-pend { background: #fff3cd; color: #856404; }
+        details { margin: .25rem 0; }
+        .pagination { display: flex; gap: .5rem; align-items: center; justify-content: center; margin: 1rem 0; }
+        .pagination a { padding: .4rem .8rem; border-radius: 6px; text-decoration: none; background: #e9ecef; color: #333; }
+    </style>
+</head>
+<body>
+<header class="topbar">
+    <img src="/static/logo.png" alt="Marlow FM">
+    <span class="brand">SMS Gateway</span>
+    <nav>
+        <a href="/">Dashboard</a>
+        <a href="/inbox" aria-current="page">Received</a>
+        <a href="/sent">Sent</a>
+        <a href="/conversation">Conversations</a>
+        <a href="/compose">Compose</a>
+        <a href="/settings">Settings</a>
+    <a href="/logout" style="margin-left:auto;opacity:.7;font-size:.8rem">Logout</a>
+    </nav>
+</header>
+<main>
+    <h2>Received — {{.Total}} message(s)</h2>
+    {{if .Messages}}
+    <div style="overflow-x:auto">
+    <table role="grid">
+        <thead><tr><th>Sender</th><th>Time</th><th>Message</th><th></th></tr></thead>
+        <tbody>
+        {{range .Messages}}
+        <tr>
+            <td><a href="/compose?to={{.Sender}}">{{.Sender}}</a></td>
+            <td class="ts" title="{{.ReceivedAt}}">{{timeAgo .ReceivedAt}}</td>
+            <td style="max-width:350px">
+                {{if gt (len .Body) 60}}
+                    {{shortText .Body 60}}
+                    <details><summary>Full text</summary><pre style="white-space:pre-wrap;word-break:break-word">{{.Body}}</pre></details>
+                {{else}}{{.Body}}{{end}}
+            </td>
+            <td>
+                {{if .ForwardedAt.Valid}}<span class="badge badge-fwd">✓ Email</span>{{else}}
+                <span class="badge badge-pend">Pending</span>{{end}}
+            </td>
+        </tr>
+        {{end}}
+        </tbody>
+    </table>
+    </div>
+    {{if gt .TotalPages 1}}
+    <div class="pagination">
+        {{if gt .Page 1}}<a href="/inbox?page={{.PrevPage}}">← Prev</a>{{end}}
+        <small>Page {{.Page}} of {{.TotalPages}}</small>
+        {{if lt .Page .TotalPages}}<a href="/inbox?page={{if lt .NextPage .TotalPages}}{{.NextPage}}{{else}}{{.TotalPages}}{{end}}">Next →</a>{{end}}
+    </div>
+    {{end}}
+    {{else}}
+    <p>No messages yet.</p>
+    {{end}}
+</main>
+<footer style="text-align:center;padding:1rem 0;color:#999;font-size:.85em">
+    Marlow FM SMS Gateway — ZTE UFI103
+</footer>
+</body>
+</html>

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}} — SMS Gateway</title>
+    <link rel="stylesheet" href="/static/pico.min.css">
+    <link rel="icon" href="/static/logo.png">
+    <style>
+        :root { --max-width: 900px; }
+        body { margin: 0; }
+        .topbar {
+            background: #1a1a2e; color: #fff;
+            padding: .5rem 1rem;
+            display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+            position: sticky; top: 0; z-index: 100;
+        }
+        .topbar img { height: 48px; border-radius: 8px; }
+        .topbar .brand { font-weight: 700; font-size: 1.1rem; }
+        .topbar nav { display: flex; gap: .25rem; flex-wrap: wrap; }
+        .topbar nav a {
+            color: rgba(255,255,255,.75); text-decoration: none;
+            padding: .25rem .5rem; border-radius: 4px; font-size: .85rem;
+        }
+        .topbar nav a:hover, .topbar nav a[aria-current="page"] { color: #fff; background: rgba(255,255,255,.15); }
+        main { max-width: var(--max-width); margin: 0 auto; padding: 1rem; }
+        @media (max-width: 600px) {
+            .topbar { padding: .4rem .6rem; }
+            .topbar .brand { display: none; }
+            .topbar nav a { padding: .35rem .5rem; font-size: .95rem; }
+            .topbar img { height: 40px; }
+            main { padding: .75rem .5rem; }
+        }
+        .ts { font-size: .85em; color: #666; }
+    </style>
+</head>
+<body>
+<header class="topbar">
+    <img src="/static/logo.png" alt="Marlow FM">
+    <span class="brand">SMS Gateway</span>
+    <nav>
+        <a href="/">Dashboard</a>
+        <a href="/inbox">Received</a>
+        <a href="/sent" aria-current="page">Sent</a>
+        <a href="/conversation">Conversations</a>
+        <a href="/compose">Compose</a>
+        <a href="/settings">Settings</a>
+    <a href="/logout" style="margin-left:auto;opacity:.7;font-size:.8rem">Logout</a>
+    </nav>
+</header>
+<main>
+    <h2>Sent Messages</h2>
+    {{if .Messages}}
+    <div style="overflow-x:auto">
+    <table role="grid">
+        <thead><tr><th>To</th><th>Sent</th><th>Message</th><th>Source</th></tr></thead>
+        <tbody>
+        {{range .Messages}}
+        <tr>
+            <td>{{.ToNumber}}</td>
+            <td class="ts" title="{{.SentAt.String}}">{{if .SentAt.Valid}}{{timeAgo .SentAt.String}}{{else}}—{{end}}</td>
+            <td style="max-width:300px">{{shortText .Body 80}}</td>
+            <td><small>{{.Source}}</small></td>
+        </tr>
+        {{end}}
+        </tbody>
+    </table>
+    </div>
+    {{else}}
+    <p>No sent messages yet.</p>
+    {{end}}
+    <p><a href="/compose">Send a new message →</a></p>
+</main>
+<footer style="text-align:center;padding:1rem 0;color:#999;font-size:.85em">
+    Marlow FM SMS Gateway — ZTE UFI103
+</footer>
+</body>
+</html>

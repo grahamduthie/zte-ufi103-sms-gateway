@@ -1,0 +1,26 @@
+{
+    "sms": {
+        "poll_interval_seconds": 10,
+        "storage": "SM",
+        "delete_after_forward": true
+    },
+    "email": {
+        "imap_host": "YOUR_IMAP_HOST",
+        "imap_port": 993,
+        "smtp_host": "YOUR_SMTP_HOST",
+        "smtp_port": 587,
+        "username": "YOUR_EMAIL_USERNAME",
+        "password": "YOUR_IONOS_PASSWORD",
+        "forward_to": "your-email@example.com",
+        "from_name": "Marlow FM SMS"
+    },
+    "authorised_senders": ["your-email@example.com"],
+    "sms_max_reply_chars": 160,
+    "imap_poll_interval_seconds": 60,
+    "web": {
+        "listen_addr": "0.0.0.0:80",
+        "admin_password": ""
+    },
+    "database": "/data/sms-gateway/sms.db",
+    "log_file": "/data/sms-gateway/sms-gateway.log"
+}

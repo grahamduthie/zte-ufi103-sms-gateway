@@ -1,0 +1,38 @@
+# Compiled Go binaries
+sms-gateway/sms-gateway
+sms-gateway/test-esc
+sms-gateway/test-fast
+sms-gateway/test-full
+sms-gateway/test-minimal
+sms-gateway/test-noesc
+sms-gateway/test-rilsocket
+sms-gateway/test-send
+sms-gateway/test-senddebug
+
+# SQLite databases (runtime state — not source)
+sms-gateway/sms.db
+sms-gateway/sms.db-shm
+sms-gateway/sms.db-wal
+sms-gateway/*.db
+sms-gateway/*.db-*
+sms-gateway/*.host
+*.host
+*.host-shm
+*.host-wal
+
+# Live config (contains credentials)
+sms-gateway/config.json
+
+# Partition backups (large binary blobs)
+backup/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# AI assistant session data
+.claude/
+.qwen/
+
+# macOS
+.DS_Store

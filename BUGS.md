@@ -1,0 +1,382 @@
+# Known Bugs — History & Fixes
+
+## Fixed Bugs (original development)
+
+### Bug 1: SIM PIN Lock Blocks SMS Delivery
+**Symptom**: SMS sent to the dongle don't arrive on the SIM for 40+ minutes.
+**Root cause**: After WiFi mode switch, the SIM re-locks. The SMSC queues
+messages but doesn't deliver them until `AT+CPIN="8837"` is sent.
+**Fix**: `SendSMS()` calls `ensureUnlocked()` before AT commands.
+Additionally, the SIM PIN lock has been **permanently disabled** via
+`AT+CLCK="SC",0,"8837"` — the SIM no longer requires a PIN on boot.
+`ensureUnlocked()` returns `nil` on timeout or ERROR (RILD interference)
+rather than failing the poll — `GetSMSCount` is the real health indicator.
+**Status**: ✅ Fixed + SIM PIN permanently removed.
+
+### Bug 2: SIM Index Dedup Rejects New Messages
+**Symptom**: New SMS arrive on the SIM but are never imported to the database.
+**Root cause**: When messages are deleted from the SIM, their `sim_index` stayed
+in the database. New messages reuse freed slots (0, 1, 2...) and were rejected
+as duplicates by `MessageExistsBySIMIndex`.
+**Fix**: `MarkDeletedFromSIM` now sets `sim_index = NULL`. All queries use
+`COALESCE(sim_index, -1)` to handle NULL values.
+**Status**: ✅ Fixed.
+
+### Bug 3: Email Reply Contains MIME Headers
+**Symptom**: SMS received from email replies contain raw MIME headers.
+**Root cause**: The IMAP poller was reading the raw RFC822 body instead of
+extracting just the `text/plain` part.
+**Fix**: `extractPlainFromBody()` finds the `Content-Type: text/plain` section
+and extracts only the body text between MIME boundaries.
+**Status**: ✅ Fixed.
+
+### Bug 4: Email Reply Includes Quoted Original Text
+**Symptom**: SMS from email replies include "On Sat, 4 Apr 2026 at 13:41,
+Graham Duthie wrote:" and the original message.
+**Root cause**: Gmail appends the original email as quoted text.
+**Fix**: `cleanReplyBody()` strips "On ... wrote:" blocks, Outlook headers,
+`> ` quoted lines, and everything after `\n---`.
+**Status**: ✅ Fixed.
+
+### Bug 5: Quoted-Printable Encoding Corrupts Apostrophes
+**Symptom**: Email replies with apostrophes show as `Here=E2=80=99s` in SMS.
+**Root cause**: Gmail encodes smart quotes (U+2019) as quoted-printable `=E2=80=99`.
+**Fix**: Added `decodeQuotedPrintable()` and `normaliseToGSM()`.
+**Status**: ✅ Fixed.
+
+### Bug 6: NULL sim_index Crashes Database Queries
+**Symptom**: `sql: Scan error … converting NULL to int is unsupported`.
+**Root cause**: After `MarkDeletedFromSIM` sets `sim_index = NULL`, queries fail.
+**Fix**: All queries use `COALESCE(sim_index, -1)`.
+**Status**: ✅ Fixed.
+
+### Bug 7: SIGHUP Kills Daemon on ADB Disconnect
+**Symptom**: Gateway dies silently when the adb shell session ends.
+**Fix**: Added `signal.Ignore(syscall.SIGHUP)` at daemon startup.
+**Status**: ✅ Fixed.
+
+### Bug 8: Goroutine Panics Kill Polling Silently
+**Symptom**: Gateway process is alive but stops polling.
+**Fix**: Added `defer recover()` wrappers with logging around all goroutine loop bodies.
+**Status**: ✅ Fixed.
+
+---
+
+## Fixed Issues (Refactor 2026-04-04)
+
+### `respBuf` Unbounded Growth → FIXED
+Truncated to `[:0]` at the start of every command. Peak buffer size bounded to
+one command's response (~4KB) instead of growing for days.
+
+### `readerLoop` Cannot Update After Reopen → FIXED
+Removed `bufio.Reader`; reads one byte at a time directly from `s.file` with
+500ms read deadline. A `fdMu sync.RWMutex` protects the `s.file` pointer.
+
+### `sendSMSDirectAT` fd Sharing → BEST MITIGATION
+A dedicated `SendSession` (separate fd) is not feasible: the SMD channel only
+delivers AT responses to the first fd opened. Current design (shared fd) is
+correct; the concurrent-write race from `reopen()` is eliminated because
+`reopen()` has been removed.
+
+### `parseCMGL` Skips Messages with Empty Bodies → FIXED
+Rewrote to detect `+CMGL:` header lines and collect subsequent non-header lines
+as the body. The outer loop advances to the last consumed body line.
+
+### `decodeIfNeeded` False-Positive on Hex Strings → FIXED
+After decoding, any byte below 0x20 (excluding `\n`, `\r`, `\t`) causes the
+function to return the original text unchanged.
+
+### Circuit Breaker for AT Failures → FIXED
+Backoff sequence: 2s, 4s, 8s, 16s, 32s, 60s (capped). State in `daemon_health`.
+
+### Send Queue Exponential Backoff → FIXED
+`next_retry_at` column added. Retries at `10s * 2^attempts` capped at 300s/5min.
+Max attempts raised to 50.
+
+---
+
+## Post-Refactor Fixes (2026-04-04 → 2026-04-05)
+
+### Bug 9: Modem ERROR Terminal Included in SMS Body
+**Symptom**: Forwarded emails had "ERROR" on a line by itself beneath the message.
+**Root cause**: `parseCMGL` didn't break body collection on bare `ERROR`.
+**Fix**: Added `ERROR`, `+CME ERROR:`, `+CMS ERROR:` to break conditions.
+Added regression test `TestParseCMGL_ErrorTerminal`.
+**Status**: ✅ Fixed 2026-04-04.
+
+### Bug 10: Quoted-Printable Decode Fails on Multi-Byte UTF-8
+**Symptom**: Smart quotes appear as `=E2=80=99` in SMS.
+**Root cause**: `strconv.ParseInt(hex, 16, 8)` rejects bytes >127 (signed int8 overflow).
+**Fix**: Changed to `strconv.ParseUint(hex, 16, 8)` with byte accumulation for UTF-8.
+**Status**: ✅ Fixed 2026-04-05.
+
+### Bug 11: GetSMSCount Reads RILD's CPMS Response Instead of Ours
+**Symptom**: Inbound SMS arrive on the SIM but `GetSMSCount` reports `count=0`,
+so the poller never calls `ListSMS` and messages are never imported.
+**Root cause**: RILD sends `AT+CPMS?` every 3-5 seconds on the same shared
+`/dev/smd11` fd. The gateway uses `sendCommandsMulti` which accumulates ALL
+responses in `respBuf`. RILD's `AT+CPMS?` (which often shows `count=0` because
+RILD reads SMS via QMI WMS immediately) arrives in the buffer **after** our
+own `+CPMS: "SM",N,...` response. The old regex took the **last** `+CPMS`
+match — RILD's `0` instead of our actual count.
+**Fix**: After receiving the buffer, find the `AT+CPMS?\r\n` command we sent,
+slice the buffer from that point forward, then parse. This isolates our response
+from any interleaved RILD noise.
+```go
+pattern := "AT+CPMS?\r\n"
+idx := strings.LastIndex(out, pattern)
+if idx >= 0 { out = out[idx+len(pattern):] }
+// Now parse only our response
+```
+**Status**: ✅ Deployed 2026-04-05 20:40 BST. Awaiting reboot confirmation that
+the fix resolves the two consecutive missing texts.
+
+---
+
+## Boot Persistence Issue (Fixed 2026-04-05)
+
+**Symptom**: Gateway daemon does not auto-start after reboot.
+**Root cause**: Android init runs each service in its own cgroup. When the main
+process exits, init tears down the entire cgroup — killing background children
+even with `setsid`, `nohup`, or double-fork.
+**Fix**: Added `sms-gw` as a named service in `/init.target.rc`. `start.sh` runs
+the gateway in the **foreground** — it IS the service's main process, so init
+never tears down the cgroup. `start.sh` also runs `wifi-setup.sh` on boot.
+**Status**: ✅ Fixed 2026-04-05. Verified with full reboot test.
+
+---
+
+## SMS Reliability Issues (Investigated and Fixed 2026-04-05)
+
+### Duplicate Gateway Processes Cause Missed Messages
+**Symptom**: SMS messages sometimes not forwarded as emails.
+**Root cause**: Two copies of `start.sh` / `sms-gateway` running simultaneously.
+Both opened `/dev/smd11` (the SMD channel allows multiple concurrent opens) and
+competed for AT responses — each process stole the other's modem replies,
+causing `AT+CPMS?` and `AT+CMGL` responses to be misrouted.
+
+**Why two instances?** There are two independent boot mechanisms:
+1. The `sms-gw` init service in `/init.target.rc`
+2. `/data/local/userinit.sh` which runs `librank sh start.sh &`
+
+During development, manual invocations via `adb shell` added a third copy.
+
+**Fix**: PID file guard in `start.sh`. On startup, writes `$$` to
+`gateway.pid`. Any subsequent invocation checks if that PID is alive with
+`kill -0`; if so, exits immediately.
+**Status**: ✅ Fixed 2026-04-05.
+
+### `busybox flock -n <fd>` Not Supported on This Device
+**Symptom**: Every invocation of `start.sh` exited with "another instance
+already running", causing init to throttle the service off.
+**Root cause**: BusyBox v1.23.0 (2014) on this device does not support the
+`flock -n <fd>` form (numeric file descriptor argument). `exec 9>file` silently
+fails in busybox ash to open a persistent fd, so `flock -n 9` returns "Bad file
+descriptor" (non-zero) on every call, triggering the `|| exit 1` branch.
+**Fix**: Replaced `exec 9>file; flock -n 9` with a PID file approach.
+**Status**: ✅ Fixed 2026-04-05.
+
+### Log File Grows Unboundedly
+**Symptom**: Every 2-second poll logged two lines ("SMS poll: starting" +
+"SMS poll: count=0"), producing ~60 MB/day and filling the 1.6 GB `/data`
+partition in ~3–4 weeks.
+**Fix (two-part)**:
+1. Removed per-poll "starting" and "count=0" log lines — only log when
+   count > 0 or an error occurs.
+2. Added hourly housekeeping goroutine (`housekeeping.go`) that rotates the
+   log at 10 MB (keeping one `.1` backup = 20 MB max), runs `PRAGMA
+   wal_checkpoint(TRUNCATE)`, and prunes records older than 90 days.
+   `start.sh` also rotates at 5 MB on startup.
+**Status**: ✅ Fixed 2026-04-05.
+
+---
+
+## Bug 12: AT+CNMI=0,0,0,0,0 Prevents SMS Storage in SM (Fixed 2026-04-06)
+
+*For a full explanation of the underlying modem architecture, see `SMS_MODEM_ARCHITECTURE.md`.*
+
+**Symptom**: `GetSMSCount` consistently returns 0. `AT+CPMS?` and `AT+CMGL="ALL"`
+confirm the SIM is genuinely empty. Inbound texts never appear as emails.
+Outbound (email→SMS) works fine. IMAP IDLE works fine.
+
+**Root cause**: RILD sets `AT+CNMI=0,0,0,0,0` at boot. With `mt=0`, the modem
+routes all incoming SMS exclusively via its internal QMI WMS channel to RILD
+and does **not** write them to AT-accessible SM storage. Our gateway polls SM
+via `AT+CMGL`, which is always empty.
+
+**Fix**: Include `AT+CNMI=2,1,0,0,0` in the `GetSMSCount` command sequence
+(sent every poll cycle). With `mt=1`, the modem stores each incoming SMS in the
+AT+CPMS preferred storage (SM) AND sends a `+CMTI` unsolicited result code.
+Our `readerLoop`→`NewMessageCh` path catches `+CMTI` for an immediate poll;
+the 2-second polling loop catches anything the CMTI notification misses.
+
+**Confirmed**: After fix, first test text received and forwarded within seconds.
+`+CMTI` fires immediately on arrival, triggering sub-second detection.
+
+**Status**: ✅ Fixed 2026-04-06.
+
+---
+
+## RILD / SMS Architecture Findings (updated 2026-04-06)
+
+*See `SMS_MODEM_ARCHITECTURE.md` for the full research notes including the
+theoretical risk of RILD resetting `AT+CNMI` and the potential alternative fix.*
+
+These are factual findings, not bugs — recorded here to prevent future
+misdiagnosis.
+
+### SMS Storage and Deletion
+On this MSM8916 device, RILD uses QMI WMS (over `/dev/smd36`) as its primary
+SMS channel — NOT AT commands. With the correct `AT+CNMI=2,1,0,0,0` setting,
+incoming SMS are stored on the SIM card (SM storage) by the modem. RILD does
+NOT delete them from SM storage — they persist until our gateway reads them
+with `AT+CMGL` and deletes them with `AT+CMGD`.
+
+### +CMTI URCs Now Delivered (correction from 2026-04-05)
+With `AT+CNMI=2,1,0,0,0` (set by our gateway on every poll), the modem DOES
+send `+CMTI:` unsolicited result codes when a new SMS arrives. Our `readerLoop`
+detects these and signals `NewMessageCh`, triggering an immediate poll. The
+earlier finding that "+CMTI is consumed by RILD" was caused by RILD's `mt=0`
+setting suppressing all notifications — once we override to `mt=1`, +CMTI
+arrives on our fd correctly.
+
+### mmssms.db Always Empty
+`com.qualcomm.telephony` replaces the standard Android telephony provider on
+this device. The Android telephony database
+(`/data/data/com.android.providers.telephony/databases/mmssms.db`) is
+permanently empty. The `pollAndroidSMS()` function in `android_sms.go` opens
+the database successfully (gateway runs as root), queries it, finds 0 rows, and
+returns silently. It is harmless dead code. Do not remove it without verifying
+whether a firmware update has changed this behaviour.
+
+---
+
+## Bug 13: Email Reply SMS Text Includes AT Commands (Fixed — 2026-04-06)
+
+### Symptom
+When replying to an email (which the gateway forwards as an SMS), the text
+message received on the phone contains RILD's AT commands before the actual
+reply text. Example:
+
+```
+AT+CPMS="SM","SM","SM"
+
+Reply to Malcolm text.
+```
+
+The AT commands appear first, followed by a blank line, then the user's actual
+reply. The reply text itself is intact — it's prefixed by the AT noise.
+
+### Root Cause
+The `sendSMSDirectAT()` function in `internal/atcmd/session.go` sends AT
+commands to `/dev/smd11` — a shared fd that RILD also writes to. RILD issues
+`AT+CPMS?` every 3-5 seconds. When the gateway sends `AT+CMGS="+number"\r`,
+the modem enters SMS text input mode. While in this mode, the modem captures
+**all** data arriving on the fd as SMS body text — including RILD's
+interleaved AT commands.
+
+The timing is the problem: after `AT+CMGS`, there's a window between the modem
+entering text input mode and the gateway sending the actual message text
+(followed by Ctrl-Z). Any RILD AT commands arriving in this window get
+captured as part of the SMS body.
+
+### Attempted Fixes (All Failed)
+
+#### Attempt 1: Wait for `> ` prompt with regex
+**Approach**: Instead of a fixed 2-second sleep after `AT+CMGS`, poll respBuf
+for the `> ` prompt. Once detected, send text immediately.
+
+**Regex used**: `\[\SMS\s+([A-Za-z0-9-]{8,15})\]|\[([A-Za-z0-9-]{8,15})\]`
+Wait — no, the regex was `(?:^|\r\n)>\s+\r\n`.
+
+**Why it failed**: The regex matched false positives. When the modem is in
+text input mode, it echoes RILD's AT commands back with `> ` prefix (e.g.
+`> AT+CPMS="SM","SM","SM"`). The regex matched these echoed commands instead
+of the actual modem prompt, causing the gateway to send text prematurely.
+
+#### Attempt 2: Refined regex to match only standalone `>` prompt
+**Approach**: Changed regex to `(?:\r\n|^)> $` — matches `> ` only at the end
+of the buffer on its own line.
+
+**Why it failed**: The modem prompt doesn't always arrive as `\r\n> ` at the
+end of the buffer. RILD noise can arrive between the `>` and the rest of the
+buffer, so the regex never matches within the 5-second timeout.
+
+#### Attempt 3: Reduced fixed sleep to 500ms
+**Approach**: Reverted to fixed sleep approach but reduced from 2s to 500ms
+to minimise the window for RILD interference.
+
+**Why it failed**: 500ms was not enough time for the modem to respond with
+the `> ` prompt. The modem still hasn't responded when we send the text,
+so the modem treats everything we send (including RILD's AT commands arriving
+in the same window) as SMS body text.
+
+### Key Observations
+1. **This bug is NOT new** — it existed before this session. The old code used
+   a 2-second sleep which is actually *more* likely to capture RILD noise
+   than a shorter sleep. The fact that users reported this bug now suggests
+   the old code also had the same issue, it just wasn't noticed.
+2. **The modem captures everything on the fd as text** while in CMGS text
+   input mode — there's no way to "block" RILD's writes.
+3. **The 500ms sleep** approach *should* work if the modem responds fast
+   enough, but it doesn't always.
+
+### Files Changed (Session 2026-04-06 Email Format)
+
+The following changes were made in this session and **are correct**:
+
+| File | Change |
+|------|--------|
+| `internal/database/db.go` | `NextDailySequence` — date format changed from `YYYYMMDD` to `DDMMYY`; prefix length from 8 to 6 |
+| `internal/database/db.go` | `MarkForwarded` — prefix slice from `[:8]` to `[:6]` |
+| `internal/database/db.go` | `CreateEmailSession` — prefix slice from `[:8]` to `[:6]` |
+| `internal/email/bridge.go` | `ForwardMessage` — subject format: `Text from +44... [060426-001]` (reference at end) |
+| `internal/email/bridge.go` | `buildHTMLEmail` — From/Received/Reference table moved above message body; footer reply instructions removed |
+| `internal/email/bridge.go` | `buildDeliveryHTML` — converted to HTML format matching new style |
+| `internal/email/bridge.go` | `SetLogoBase64` — new function to load logo for email embedding |
+| `internal/email/bridge.go` | `formatMultipartMessage` — MIME multipart email with logo as CID attachment |
+| `internal/email/bridge.go` | `processReply` — regex changed to match both `[SMS YYYYMMDD-NNN]` (old) and `[DDMMYY-NNN]` (new) subjects |
+| `cmd/sms-gateway/main.go` | Added `loadLogoBase64()` to load logo at startup |
+| `cmd/sms-gateway/main.go` | `email.SetLogoBase64()` called after bridge creation |
+| `internal/atcmd/session.go` | `sendSMSDirectAT` — SMS send timing reworked (still has Bug 13) |
+
+### Final Fix (2026-04-06)
+
+**Root cause (discovered)**: `readerLoop` only flushes bytes to `respBuf` when it
+receives a `\n`. The modem's `>` prompt is `\r\n> ` — no trailing newline. Without
+a newline, `>` never reached `respBuf`. `sendSMSDirectAT` was only ever detecting
+`>` when RILD happened to follow it with a newline-terminated line (i.e. `AT+CPMS=...`),
+which means we were always already corrupted by the time we detected the prompt.
+
+**Full fix**: Two changes to `internal/atcmd/session.go`:
+
+1. **`readerLoop`**: Added immediate flush when `>` is seen, without waiting for `\n`.
+   Also signals `promptCh` (new buffered channel) to wake `sendSMSDirectAT` instantly.
+
+2. **`sendSMSDirectAT`**: Replaced 20ms polling loop with `select` on `promptCh`.
+   PDU is now written within microseconds of modem sending `>`, beating RILD's
+   AT+CPMS injection (~2ms later).
+
+Supporting changes made during this session:
+- Switched from text mode (AT+CMGF=1) to PDU mode (AT+CMGF=0) — RILD injection
+  now gives clean `+CMS ERROR: 304` instead of silently corrupting the SMS body.
+- Moved AT+CNMI=2,1,0,0,0 from every-2s poll to startup-only (+ hourly housekeeping)
+  — stopped RILD from being triggered on every poll cycle.
+- Added "wait for quiet" after AT+CMGF=0 — flushes RILD's reaction to mode change.
+- Added bare `OK` detection in Step 3 confirmation — some firmware returns `OK`
+  without `+CMGS: <ref>`.
+
+**Result**: `SMS sent to +447700000001 (ref=47)` — confirmed clean send, no AT
+commands in received text.
+
+| File | Change |
+|------|--------|
+| `internal/atcmd/session.go` | `readerLoop` — immediate flush + `promptCh` signal on `>` |
+| `internal/atcmd/session.go` | `sendSMSDirectAT` — PDU mode, quiet-wait, `promptCh`-based prompt detection |
+| `internal/atcmd/session.go` | `GetSMSCount` — removed AT+CNMI from every-poll cycle |
+| `cmd/sms-gateway/main.go` | AT+CNMI applied once at startup via `SetTextMode` |
+| `cmd/sms-gateway/housekeeping.go` | AT+CNMI re-applied hourly as safety net |
+
+---
+
+*See also: `STATUS.md` (current status), `GATEWAY.md` (architecture), `REFACTOR_PLAN.md` (fix plan), `DEVICE.md` (hardware and RILD details)*

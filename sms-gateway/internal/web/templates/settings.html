@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}} — SMS Gateway</title>
+    <link rel="stylesheet" href="/static/pico.min.css">
+    <link rel="icon" href="/static/logo.png">
+    <style>
+        :root { --max-width: 800px; }
+        body { margin: 0; }
+        .topbar {
+            background: #1a1a2e; color: #fff;
+            padding: .5rem 1rem;
+            display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+            position: sticky; top: 0; z-index: 100;
+        }
+        .topbar img { height: 48px; border-radius: 8px; }
+        .topbar .brand { font-weight: 700; font-size: 1.1rem; }
+        .topbar nav { display: flex; gap: .25rem; flex-wrap: wrap; }
+        .topbar nav a {
+            color: rgba(255,255,255,.75); text-decoration: none;
+            padding: .25rem .5rem; border-radius: 4px; font-size: .85rem;
+        }
+        .topbar nav a:hover, .topbar nav a[aria-current="page"] { color: #fff; background: rgba(255,255,255,.15); }
+        main { max-width: var(--max-width); margin: 0 auto; padding: 1rem; }
+        @media (max-width: 600px) {
+            .topbar { padding: .4rem .6rem; }
+            .topbar .brand { display: none; }
+            .topbar nav a { padding: .35rem .5rem; font-size: .95rem; }
+            .topbar img { height: 40px; }
+            main { padding: .75rem .5rem; }
+        }
+        article { margin-bottom: 1rem; }
+        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+        @media (max-width: 600px) { .form-grid { grid-template-columns: 1fr; } }
+        form label { display: block; margin-bottom: .5rem; }
+        form input, form textarea { width: 100%; padding: .5rem; border: 1px solid #ccc; border-radius: 4px; }
+        .danger-zone { border: 1px solid #f8d7da; border-radius: 8px; padding: 1rem; background: #fff5f5; }
+        .danger-zone h3 { margin-top: 0; color: #721c24; }
+        .btn-danger { background: #dc3545; color: #fff; border: none; padding: .5rem 1rem; border-radius: 6px; cursor: pointer; font-size: .85rem; }
+        .btn-danger:hover { background: #c82333; }
+        .btn-warn { background: #fd7e14; color: #fff; border: none; padding: .5rem 1rem; border-radius: 6px; cursor: pointer; font-size: .85rem; }
+        .btn-warn:hover { background: #e56b0a; }
+        .danger-actions { display: flex; gap: .75rem; flex-wrap: wrap; margin-top: .5rem; }
+        .danger-actions form { margin: 0; padding: 0; }
+        .danger-actions button { display: inline-block; vertical-align: middle; }
+    </style>
+</head>
+<body>
+<header class="topbar">
+    <img src="/static/logo.png" alt="Marlow FM">
+    <span class="brand">SMS Gateway</span>
+    <nav>
+        <a href="/">Dashboard</a>
+        <a href="/inbox">Received</a>
+        <a href="/sent">Sent</a>
+        <a href="/conversation">Conversations</a>
+        <a href="/compose">Compose</a>
+        <a href="/settings" aria-current="page">Settings</a>
+    <a href="/logout" style="margin-left:auto;opacity:.7;font-size:.8rem">Logout</a>
+    </nav>
+</header>
+<main>
+    <h2>Settings</h2>
+    {{if .Saved}}<p style="color:#155724;background:#d4edda;padding:.5rem 1rem;border-radius:4px">Settings saved.</p>{{end}}
+    <form method="POST" action="/settings">
+        <article>
+            <header><strong>Email</strong></header>
+            <div class="form-grid">
+                <label>IMAP Host
+                    <input type="text" name="imap_host" value="{{.Cfg.Email.IMAPHost}}" required>
+                </label>
+                <label>SMTP Host
+                    <input type="text" name="smtp_host" value="{{.Cfg.Email.SMTPHost}}" required>
+                </label>
+                <label>Username (email address)
+                    <input type="email" name="username" value="{{.Cfg.Email.Username}}" required>
+                </label>
+                <label>Forward To
+                    <input type="email" name="forward_to" value="{{.Cfg.Email.ForwardTo}}" required>
+                </label>
+                <label>From Name
+                    <input type="text" name="from_name" value="{{.Cfg.Email.FromName}}">
+                </label>
+                <label>Password <small>(leave blank to keep current)</small>
+                    <input type="password" name="password" placeholder="unchanged" autocomplete="new-password">
+                </label>
+            </div>
+        </article>
+        <article>
+            <header><strong>SMS Polling</strong></header>
+            <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
+                <label>SMS Poll Interval (seconds)
+                    <input type="number" name="sms_poll_interval" value="{{.Cfg.SMS.PollIntervalSec}}" min="5" max="300">
+                </label>
+                <label>Email Poll Interval (seconds)
+                    <input type="number" name="imap_poll_interval" value="{{.Cfg.IMAPPollInterval}}" min="30" max="600">
+                </label>
+                <label>Max Reply Chars
+                    <input type="number" name="sms_max_reply_chars" value="{{.Cfg.SMSMaxReplyChars}}" min="1" max="160">
+                </label>
+            </div>
+        </article>
+        <article>
+            <header><strong>Authorised Reply Senders</strong></header>
+            <label>Email addresses allowed to send SMS replies (one per line)
+                <textarea name="authorised_senders" rows="4">{{range .Cfg.AuthorisedSenders}}{{.}}
+{{end}}</textarea>
+            </label>
+            <small>Only emails from these addresses will be forwarded as SMS replies.</small>
+        </article>
+        <button type="submit">Save Settings</button>
+    </form>
+    <p><small>Note: changes to poll intervals take effect on the next restart of the gateway daemon.</small></p>
+
+    <hr>
+    <div class="danger-zone">
+        <h3>⚠ Danger Zone</h3>
+        <p style="font-size:.88rem;color:#666">These actions affect the running gateway and device.</p>
+        <div class="danger-actions">
+            <form method="POST" action="/settings?action=restart" onsubmit="return confirm('Restart the SMS gateway? It will be back within ~15 seconds.')">
+                <button type="submit" class="btn-warn">Restart Gateway</button>
+            </form>
+            <form method="POST" action="/settings?action=reboot" onsubmit="return confirm('Reboot the entire dongle? This will take ~60 seconds.')">
+                <button type="submit" class="btn-danger">Reboot Dongle</button>
+            </form>
+        </div>
+    </div>
+</main>
+<footer style="text-align:center;padding:1rem 0;color:#999;font-size:.85em">
+    Marlow FM SMS Gateway — ZTE UFI103
+</footer>
+</body>
+</html>

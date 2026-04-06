@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}} — SMS Gateway</title>
+    <link rel="stylesheet" href="/static/pico.min.css">
+    <link rel="icon" href="/static/logo.png">
+    <style>
+        :root { --max-width: 800px; }
+        body { margin: 0; }
+        .topbar {
+            background: #1a1a2e; color: #fff;
+            padding: .5rem 1rem;
+            display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+            position: sticky; top: 0; z-index: 100;
+        }
+        .topbar img { height: 48px; border-radius: 8px; }
+        .topbar .brand { font-weight: 700; font-size: 1.1rem; }
+        .topbar nav { display: flex; gap: .25rem; flex-wrap: wrap; }
+        .topbar nav a {
+            color: rgba(255,255,255,.75); text-decoration: none;
+            padding: .25rem .5rem; border-radius: 4px; font-size: .85rem;
+        }
+        .topbar nav a:hover, .topbar nav a[aria-current="page"] { color: #fff; background: rgba(255,255,255,.15); }
+        .topbar .signal-indicator { margin-left: auto; font-size: .8rem; color: rgba(255,255,255,.6); }
+        main { max-width: var(--max-width); margin: 0 auto; padding: 1rem; }
+        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+        @media (max-width: 600px) {
+            .topbar { padding: .4rem .6rem; }
+            .topbar .brand { display: none; }
+            .topbar nav a { padding: .35rem .5rem; font-size: .95rem; }
+            .topbar img { height: 40px; }
+            main { padding: .75rem .5rem; }
+            .stat-grid { grid-template-columns: 1fr; }
+        }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: .8em; }
+        .badge-fwd { background: #d4edda; color: #155724; }
+        .badge-pend { background: #fff3cd; color: #856404; }
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: .5rem; }
+        .section-header h3 { margin: 0; }
+        .msg-row { display: flex; gap: .5rem; padding: .5rem .75rem; background: #f8f9fa; border-radius: 8px; margin-bottom: .4rem; font-size: .88rem; }
+        .msg-row.out { background: #e9ecef; }
+        .msg-dir { font-weight: 700; flex-shrink: 0; min-width: 28px; text-align: center; }
+        .msg-row.in .msg-dir { color: #0d6efd; }
+        .msg-row.out .msg-dir { color: #198754; }
+        .msg-body { flex: 1; word-break: break-word; }
+        .msg-meta { text-align: right; flex-shrink: 0; font-size: .75rem; color: #999; min-width: 70px; }
+        .count-badge { display: inline-block; background: #e9ecef; padding: 1px 8px; border-radius: 10px; font-size: .8rem; color: #666; }
+        .info-row { display: flex; justify-content: space-between; padding: .3rem 0; border-bottom: 1px solid #f0f0f0; }
+        .info-label { color: #666; font-size: .88rem; }
+        .info-value { font-weight: 600; font-size: .88rem; }
+        .gw-status { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: .82rem; font-weight: 600; }
+        .gw-status.running { background: #d4edda; color: #155724; }
+        .gw-status.down { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+<header class="topbar">
+    <img src="/static/logo.png" alt="Marlow FM">
+    <span class="brand">SMS Gateway</span>
+    <nav>
+        <a href="/" aria-current="page">Dashboard</a>
+        <a href="/inbox">Received</a>
+        <a href="/sent">Sent</a>
+        <a href="/conversation">Conversations</a>
+        <a href="/compose">Compose</a>
+        <a href="/settings">Settings</a>
+    <a href="/logout" style="margin-left:auto;opacity:.7;font-size:.8rem">Logout</a>
+    </nav>
+    {{if .Signal.Bars}}<span class="signal-indicator">{{signalBars .Signal.Bars}} {{.Signal.DBM}}dBm</span>{{end}}
+</header>
+<main>
+    <h2>Dashboard</h2>
+
+    <!-- Gateway Status -->
+    <article>
+        <header><strong>Gateway Status</strong></header>
+        <p>
+            <span class="gw-status running">● Running</span>
+            {{if .Uptime}}<span style="margin-left:.5rem;color:#666;font-size:.85rem">Uptime: {{.Uptime}}s</span>{{end}}
+        </p>
+    </article>
+
+    <!-- System Status -->
+    <article>
+        <header><strong>System Status</strong></header>
+        <div class="stat-grid">
+            <div>
+                <h4>Signal</h4>
+                <p>
+                    {{if .Signal.DBM}}{{.Signal.DBM}} dBm{{else}}--{{end}}
+                    (RSSI={{if .Signal.RSSI}}{{.Signal.RSSI}}{{else}}--{{end}})
+                    <strong>{{signalBars .Signal.Bars}}</strong>
+                </p>
+                <p><strong>Operator:</strong> {{if .Network.Operator}}{{.Network.Operator}}{{else}}--{{end}}</p>
+                <p><strong>Registered:</strong> {{if .Network.Registered}}Yes{{else}}No{{end}}
+                    {{if .Network.Roaming}} (Roaming){{end}}</p>
+            </div>
+            <div>
+                <h4>Messages This Month</h4>
+                <p><strong>Received:</strong> {{.Monthly.Received}} <span class="count-badge">total</span></p>
+                <p><strong>Sent:</strong> {{.Monthly.Sent}} <span class="count-badge">total</span></p>
+                <hr>
+                <div class="info-row"><span class="info-label">Last received</span><span class="info-value">{{ukTime .LastRx}}</span></div>
+                <div class="info-row"><span class="info-label">Last sent</span><span class="info-value">{{ukTime .LastTx}}</span></div>
+            </div>
+        </div>
+    </article>
+
+    <!-- Recent Received -->
+    <div class="section-header">
+        <h3>Recent Received</h3>
+        <a href="/inbox" style="font-size:.85rem">View all →</a>
+    </div>
+    {{if .RecentIn}}
+        {{range .RecentIn}}
+        <div class="msg-row in">
+            <div class="msg-dir">←</div>
+            <div class="msg-body">
+                <strong>{{.Sender}}</strong><br>
+                {{shortText .Body 80}}
+            </div>
+            <div class="msg-meta">
+                {{timeAgo .ReceivedAt}}
+                {{if .ForwardedAt.Valid}}<br><span class="badge badge-fwd">✓</span>{{else}}
+                <span class="badge badge-pend">…</span>{{end}}
+            </div>
+        </div>
+        {{end}}
+    {{else}}
+        <p style="color:#999;font-size:.9rem;text-align:center">No messages yet.</p>
+    {{end}}
+
+    <!-- Recent Sent -->
+    <div class="section-header" style="margin-top:1.5rem">
+        <h3>Recent Sent</h3>
+        <a href="/sent" style="font-size:.85rem">View all →</a>
+    </div>
+    {{if .RecentOut}}
+        {{range .RecentOut}}
+        <div class="msg-row out">
+            <div class="msg-dir">→</div>
+            <div class="msg-body">
+                <strong>{{.ToNumber}}</strong><br>
+                {{shortText .Body 80}}
+            </div>
+            <div class="msg-meta">
+                {{if .SentAt.Valid}}{{timeAgo .SentAt.String}}{{else}}—{{end}}
+                <br><small>{{.Source}}</small>
+            </div>
+        </div>
+        {{end}}
+    {{else}}
+        <p style="color:#999;font-size:.9rem;text-align:center">No sent messages yet.</p>
+    {{end}}
+</main>
+<footer style="text-align:center;padding:1rem 0;color:#999;font-size:.85em">
+    Marlow FM SMS Gateway — ZTE UFI103
+</footer>
+</body>
+</html>

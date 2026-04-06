@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}} — SMS Gateway</title>
+    <link rel="stylesheet" href="/static/pico.min.css">
+    <link rel="icon" href="/static/logo.png">
+    <style>
+        :root { --max-width: 700px; }
+        * { box-sizing: border-box; }
+        body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; }
+
+        /* ── Nav ── */
+        .topbar {
+            background: #1a1a2e;
+            color: #fff;
+            padding: .5rem 1rem;
+            display: flex;
+            align-items: center;
+            gap: .75rem;
+            flex-wrap: wrap;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .topbar img { height: 48px; border-radius: 8px; }
+        .topbar .brand { font-weight: 700; font-size: 1.1rem; white-space: nowrap; }
+        .topbar nav { display: flex; gap: .25rem; flex-wrap: wrap; }
+        .topbar nav a {
+            color: rgba(255,255,255,.75);
+            text-decoration: none;
+            padding: .25rem .5rem;
+            border-radius: 4px;
+            font-size: .85rem;
+        }
+        .topbar nav a:hover, .topbar nav a[aria-current="page"] {
+            color: #fff;
+            background: rgba(255,255,255,.15);
+        }
+        .topbar .signal-indicator {
+            margin-left: auto;
+            font-size: .8rem;
+            color: rgba(255,255,255,.6);
+        }
+
+        /* ── Main ─ */
+        main { flex: 1; max-width: var(--max-width); width: 100%; margin: 0 auto; padding: 0 1rem; }
+
+        /* ── Conversation list ── */
+        .conv-list { list-style: none; padding: 0; margin: 1rem 0; }
+        .conv-item {
+            display: flex;
+            align-items: center;
+            gap: .75rem;
+            padding: .85rem .75rem;
+            border-bottom: 1px solid #eee;
+            text-decoration: none;
+            color: inherit;
+            border-radius: 8px;
+            transition: background .15s;
+        }
+        .conv-item:hover { background: #f8f9fa; }
+        .conv-avatar {
+            width: 44px; height: 44px;
+            border-radius: 50%;
+            background: #e9ecef;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1rem;
+            flex-shrink: 0;
+            color: #495057;
+        }
+        .conv-info { flex: 1; min-width: 0; }
+        .conv-name { font-weight: 600; font-size: .95rem; }
+        .conv-preview {
+            font-size: .85rem;
+            color: #6c757d;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 280px;
+        }
+        .conv-meta { text-align: right; flex-shrink: 0; }
+        .conv-time { font-size: .75rem; color: #999; }
+        .conv-badge {
+            display: inline-block;
+            min-width: 20px;
+            height: 20px;
+            border-radius: 10px;
+            background: #0d6efd;
+            color: #fff;
+            font-size: .7rem;
+            font-weight: 700;
+            text-align: center;
+            line-height: 20px;
+            padding: 0 5px;
+            margin-top: .25rem;
+        }
+
+        /* ── Thread view (chat bubbles) ── */
+        .thread-header {
+            display: flex;
+            align-items: center;
+            gap: .5rem;
+            padding: .75rem 0;
+            border-bottom: 1px solid #eee;
+            margin-bottom: .5rem;
+        }
+        .thread-header .back-btn {
+            text-decoration: none;
+            color: #0d6efd;
+            font-size: 1.2rem;
+            padding: .25rem;
+        }
+        .thread-header h2 { margin: 0; font-size: 1rem; }
+        .thread-header .compose-btn {
+            margin-left: auto;
+            text-decoration: none;
+            font-size: .85rem;
+            color: #0d6efd;
+        }
+        .thread {
+            display: flex;
+            flex-direction: column;
+            gap: .35rem;
+            padding: .5rem 0 6rem;
+        }
+        .bubble-row { display: flex; }
+        .bubble-row.out { justify-content: flex-end; }
+        .bubble {
+            max-width: 80%;
+            padding: .55rem .8rem;
+            border-radius: 16px;
+            font-size: .9rem;
+            line-height: 1.45;
+            word-wrap: break-word;
+            position: relative;
+        }
+        .bubble-row.in .bubble {
+            background: var(--color-in, #e9ecef);
+            color: #212529;
+            border-bottom-left-radius: 4px;
+        }
+        .bubble-row.out .bubble {
+            background: var(--color-out, #0d6efd);
+            color: var(--color-out-text, #fff);
+            border-bottom-right-radius: 4px;
+        }
+        .bubble .btime {
+            font-size: .65rem;
+            opacity: .6;
+            margin-top: .15rem;
+        }
+        .bubble-row.out .bubble .btime { text-align: right; }
+        .bubble .bstatus {
+            font-size: .6rem;
+            opacity: .7;
+        }
+        .no-msgs { text-align: center; color: #999; padding: 2rem; }
+
+        /* ── Reply box (fixed bottom) ── */
+        .reply-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: #fff;
+            border-top: 1px solid #ddd;
+            padding: .5rem 1rem;
+            display: flex;
+            gap: .5rem;
+            z-index: 50;
+        }
+        .reply-bar input[type="text"] {
+            flex: 1;
+            border: 1px solid #ccc;
+            border-radius: 20px;
+            padding: .55rem .85rem;
+            font-size: .95rem;
+            color: #212529 !important;
+            background-color: #fff !important;
+            -webkit-text-fill-color: #212529 !important;
+            outline: none;
+            min-width: 0;
+        }
+        .reply-bar input::placeholder { color: #999; }
+        .reply-bar button {
+            border-radius: 20px;
+            padding: .55rem 1.2rem;
+            font-size: .85rem;
+            white-space: nowrap;
+            flex-shrink: 0;
+            width: auto !important;
+            margin: 0;
+        }
+
+        /* ── Mobile ── */
+        @media (max-width: 600px) {
+            .topbar { padding: .4rem .6rem; }
+            .topbar .brand { display: none; }
+            .topbar nav a { padding: .35rem .5rem; font-size: .95rem; }
+            .topbar img { height: 40px; }
+            main { padding: 0 .5rem; }
+            .conv-preview { max-width: 180px; }
+            .bubble { max-width: 85%; font-size: .88rem; }
+            .reply-bar { padding: .4rem .6rem; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ── Top bar ── -->
+<header class="topbar">
+    <img src="/static/logo.png" alt="Marlow FM">
+    <span class="brand">SMS Gateway</span>
+    <nav>
+        <a href="/">Dashboard</a>
+        <a href="/inbox">Received</a>
+        <a href="/sent">Sent</a>
+        <a href="/conversation" {{if eq .Title "Conversations"}}aria-current="page"{{end}}>Conversations</a>
+        <a href="/compose" {{if eq .Title "Compose SMS"}}aria-current="page"{{end}}>Compose</a>
+        <a href="/settings" {{if eq .Title "Settings"}}aria-current="page"{{end}}>Settings</a>
+    <a href="/logout" style="margin-left:auto;opacity:.7;font-size:.8rem">Logout</a>
+    </nav>
+    {{if .Signal.Bars}}<span class="signal-indicator">{{signalBars .Signal.Bars}} {{.Signal.DBM}}dBm</span>{{end}}
+</header>
+
+<main>
+{{if .Number}}
+    <!-- ── Single thread view ── -->
+    <div class="thread-header">
+        <a href="/conversation" class="back-btn">‹</a>
+        <h2>{{.Number}}</h2>
+        <a href="/compose?to={{.Number}}&from={{.Number}}" class="compose-btn">Reply</a>
+    </div>
+    <div class="thread">
+        {{if .Messages}}
+            {{range .Messages}}
+            <div class="bubble-row {{.Direction}}">
+                <div class="bubble">
+                    {{.Body}}
+                    <div class="btime">{{messageDate .Timestamp}} <span class="bstatus">{{if eq .Direction "out"}}{{if eq .Status "sent"}}✓{{else if eq .Status "failed"}}✗{{else}}·{{end}}{{end}}</span></div>
+                </div>
+            </div>
+            {{end}}
+        {{else}}
+            <div class="no-msgs">No messages yet. Type below to start a conversation.</div>
+        {{end}}
+    </div>
+
+    <!-- Reply bar -->
+    <form method="POST" action="/compose" class="reply-bar">
+        <input type="hidden" name="to_number" value="{{.Number}}">
+        <input type="hidden" name="from" value="{{.Number}}">
+        <input type="text" name="body" placeholder="Type a reply…" maxlength="160" required autocomplete="off">
+        <button type="submit">Send</button>
+    </form>
+{{else}}
+    <!-- ── Conversation list ── -->
+    <h2 style="margin-top:1rem">Conversations</h2>
+    {{if .Conversations}}
+    <ul class="conv-list">
+        {{range .Conversations}}
+        <li>
+            <a href="/conversation?number={{.Number}}" class="conv-item">
+                <div class="conv-avatar">{{printf "%.1s" .Number}}</div>
+                <div class="conv-info">
+                    <div class="conv-name">{{.Number}}</div>
+                    <div class="conv-preview">{{if .LastBody}}{{.LastBody}}{{else}}—{{end}}</div>
+                </div>
+                <div class="conv-meta">
+                    <div class="conv-time">{{if .LastTime}}{{timeAgo .LastTime}}{{end}}</div>
+                    {{if gt .UnreadCount 0}}<div class="conv-badge">{{.UnreadCount}}</div>{{end}}
+                </div>
+            </a>
+        </li>
+        {{end}}
+    </ul>
+    {{if gt .TotalPages 1}}
+    <nav aria-label="Pagination" style="display:flex;gap:.5rem;align-items:center;justify-content:center;margin:1rem 0">
+        {{if gt .Page 1}}<a href="/conversation?page={{.PrevPage}}" style="padding:.4rem .8rem;border-radius:6px;text-decoration:none;background:#e9ecef;color:#333;font-size:.85rem">← Prev</a>{{end}}
+        <small style="color:#666">Page {{.Page}} of {{.TotalPages}} ({{.Total}} conversations)</small>
+        {{if lt .Page .TotalPages}}<a href="/conversation?page={{.NextPage}}" style="padding:.4rem .8rem;border-radius:6px;text-decoration:none;background:#e9ecef;color:#333;font-size:.85rem">Next →</a>{{end}}
+    </nav>
+    {{end}}
+    {{else}}
+    <p style="text-align:center;color:#999;padding:2rem;">No conversations yet. Messages will appear here as they arrive.</p>
+    {{end}}
+    <p><a href="/compose">Send a new message →</a></p>
+{{end}}
+</main>
+
+<script>
+// Auto-scroll to bottom on thread view
+(function(){
+    var bar = document.querySelector('.reply-bar');
+    if (bar) {
+        window.scrollTo(0, document.body.scrollHeight);
+    }
+})();
+</script>
+</body>
+</html>

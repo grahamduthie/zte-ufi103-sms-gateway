@@ -155,7 +155,7 @@ func (b *Bridge) SendDeliveryConfirmation(toNumber, body string, success bool, r
 	var subject, statusIcon, statusText, statusColor string
 	if success {
 		if sessionPrefix != "" {
-			subject = fmt.Sprintf("Re: Text to %s [%s]", toNumber, sessionPrefix)
+			subject = fmt.Sprintf("Re: Text from %s [%s]", toNumber, sessionPrefix)
 		} else {
 			subject = fmt.Sprintf("SMS delivered to %s", toNumber)
 		}
@@ -164,7 +164,7 @@ func (b *Bridge) SendDeliveryConfirmation(toNumber, body string, success bool, r
 		statusColor = "#16a34a"
 	} else {
 		if sessionPrefix != "" {
-			subject = fmt.Sprintf("Re: Text to %s [%s]", toNumber, sessionPrefix)
+			subject = fmt.Sprintf("Re: Text from %s [%s]", toNumber, sessionPrefix)
 		} else {
 			subject = fmt.Sprintf("SMS delivery FAILED to %s", toNumber)
 		}
@@ -511,7 +511,7 @@ func (b *Bridge) processReply(imapMsg *imap.Message, c *client.Client) error {
 		body = strings.TrimSpace(trunc)
 	}
 
-	_, err = b.db.EnqueueSMS(sender, body, "email_reply", prefix)
+	_, err = b.db.EnqueueSMS(sender, body, "email_reply", raw)
 	if err != nil {
 		return fmt.Errorf("enqueue sms: %w", err)
 	}

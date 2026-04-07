@@ -19,6 +19,10 @@ WIFI_PSK="YOUR_WIFI_PASSWORD"
 WIFI_SSID_2="YOUR_WIFI_SSID_2"
 WIFI_PSK_2="YOUR_WIFI_PASSWORD"
 
+# Tertiary network
+WIFI_SSID_3="YOUR_WIFI_SSID_3"
+WIFI_PSK_3="YOUR_WIFI_PASSWORD_3"
+
 GW_DIR=/data/sms-gateway
 
 echo "[wifi-setup] Switching to client mode, SSID: $WIFI_SSID"
@@ -57,6 +61,12 @@ network={
     psk="${WIFI_PSK_2}"
     key_mgmt=WPA-PSK
     priority=2
+}
+network={
+    ssid="${WIFI_SSID_3}"
+    psk="${WIFI_PSK_3}"
+    key_mgmt=WPA-PSK
+    priority=3
 }
 EOF
 

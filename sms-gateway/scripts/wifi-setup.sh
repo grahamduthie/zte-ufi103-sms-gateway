@@ -9,8 +9,15 @@
 #
 # WiFi credentials — edit here or deploy a new script via adb push.
 # These will eventually be read from config.json by the WiFi AP manager.
+# Multiple networks are supported — wpa_supplicant will try them in priority order.
+
+# Primary network
 WIFI_SSID="YOUR_WIFI_SSID_1"
 WIFI_PSK="YOUR_WIFI_PASSWORD"
+
+# Secondary network
+WIFI_SSID_2="YOUR_WIFI_SSID_2"
+WIFI_PSK_2="YOUR_WIFI_PASSWORD"
 
 GW_DIR=/data/sms-gateway
 
@@ -43,6 +50,13 @@ network={
     ssid="${WIFI_SSID}"
     psk="${WIFI_PSK}"
     key_mgmt=WPA-PSK
+    priority=1
+}
+network={
+    ssid="${WIFI_SSID_2}"
+    psk="${WIFI_PSK_2}"
+    key_mgmt=WPA-PSK
+    priority=2
 }
 EOF
 

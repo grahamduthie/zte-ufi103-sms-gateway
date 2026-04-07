@@ -61,7 +61,7 @@ func (b *Bridge) ForwardMessage(msg database.Message) error {
 		receivedStr = receivedTime.In(loc).Format("02 Jan 2006 15:04:05 MST")
 	}
 
-	body := buildHTMLEmail(msg.Body, msg.Sender, receivedStr, sessionID)
+	body := buildHTMLEmail(msg.Body, msg.Sender, receivedStr)
 
 	header := make(map[string]string)
 	header["From"] = fmt.Sprintf("%s <%s>", b.cfg.FromName, b.cfg.Username)
@@ -608,7 +608,7 @@ func SetLogoBase64(b64 string) {
 
 // buildHTMLEmail constructs an HTML email with the Marlow FM logo,
 // the SMS message body, sender phone number, and received timestamp.
-func buildHTMLEmail(message, sender, receivedTime, sessionID string) string {
+func buildHTMLEmail(message, sender, receivedTime string) string {
 	// Escape HTML special characters in the message body
 	escaped := strings.ReplaceAll(message, "&", "&amp;")
 	escaped = strings.ReplaceAll(escaped, "<", "&lt;")
@@ -660,10 +660,6 @@ func buildHTMLEmail(message, sender, receivedTime, sessionID string) string {
           <td style="color:#6b7280; font-size:12px; font-weight:600; text-transform:uppercase; padding:4px 0;">Received</td>
           <td style="color:#1a1a2e; font-size:14px; padding:4px 0;">%s</td>
         </tr>
-        <tr>
-          <td style="color:#6b7280; font-size:12px; font-weight:600; text-transform:uppercase; padding:4px 0;">Reference</td>
-          <td style="color:#1a1a2e; font-size:14px; padding:4px 0;">[%s]</td>
-        </tr>
       </table>
       <div style="background:#f8f8fc; border-left:3px solid #1a1a2e; padding:16px; border-radius:4px;">
         <p style="font-size:16px; line-height:1.5; color:#1a1a2e; margin:0; white-space:pre-wrap;">%s</p>
@@ -672,7 +668,7 @@ func buildHTMLEmail(message, sender, receivedTime, sessionID string) string {
   </div>
 </div>
 </body>
-</html>`, logoTag, htmlEscape(sender), receivedTime, sessionID, escaped)
+</html>`, logoTag, htmlEscape(sender), receivedTime, escaped)
 
 	return html
 }
@@ -734,10 +730,6 @@ func buildDeliveryHTML(statusIcon, statusText, toNumber, body string, ref int, f
         <tr>
           <td style="color:#6b7280; font-size:12px; font-weight:600; text-transform:uppercase; padding:4px 0;">Message</td>
           <td style="color:#1a1a2e; font-size:14px; padding:4px 0;">%s</td>
-        </tr>
-        <tr>
-          <td style="color:#6b7280; font-size:12px; font-weight:600; text-transform:uppercase; padding:4px 0;">Modem Ref</td>
-          <td style="color:#1a1a2e; font-size:14px; padding:4px 0;">%d</td>
         </tr>%s
       </table>
     </div>
@@ -748,7 +740,7 @@ func buildDeliveryHTML(statusIcon, statusText, toNumber, body string, ref int, f
   </div>
 </div>
 </body>
-</html>`, logoTag, statusIcon, statusColor, statusText, toNumber, htmlEscape(body), ref, extraRow)
+</html>`, logoTag, statusIcon, statusColor, statusText, toNumber, htmlEscape(body), extraRow)
 
 	return html
 }

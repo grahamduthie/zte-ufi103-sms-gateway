@@ -354,35 +354,28 @@ func TestIsAuthorisedSender_MalformedFrom(t *testing.T) {
 // ── HTML email tests ─────────────────────────────────────────────────────
 
 func TestBuildHTMLEmail_ContainsMessage(t *testing.T) {
-	html := buildHTMLEmail("Hello World", "+447700000001", "06 Apr 2026 10:30:00 BST", "060426-001")
+	html := buildHTMLEmail("Hello World", "+447700000001", "06 Apr 2026 10:30:00 BST")
 	if !strings.Contains(html, "Hello World") {
 		t.Fatal("expected message body in HTML")
 	}
 }
 
 func TestBuildHTMLEmail_ContainsSender(t *testing.T) {
-	html := buildHTMLEmail("Test", "+447700000001", "06 Apr 2026 10:30:00 BST", "060426-001")
+	html := buildHTMLEmail("Test", "+447700000001", "06 Apr 2026 10:30:00 BST")
 	if !strings.Contains(html, "+447700000001") {
 		t.Fatal("expected sender number in HTML")
 	}
 }
 
 func TestBuildHTMLEmail_ContainsReceivedTime(t *testing.T) {
-	html := buildHTMLEmail("Test", "+447700000001", "06 Apr 2026 10:30:00 BST", "060426-001")
+	html := buildHTMLEmail("Test", "+447700000001", "06 Apr 2026 10:30:00 BST")
 	if !strings.Contains(html, "06 Apr 2026 10:30:00 BST") {
 		t.Fatal("expected received time in HTML")
 	}
 }
 
-func TestBuildHTMLEmail_ContainsSessionID(t *testing.T) {
-	html := buildHTMLEmail("Test", "+447700000001", "06 Apr 2026 10:30:00 BST", "060426-001")
-	if !strings.Contains(html, "[060426-001]") {
-		t.Fatal("expected session ID in HTML")
-	}
-}
-
 func TestBuildHTMLEmail_MetaBeforeMessage(t *testing.T) {
-	html := buildHTMLEmail("Hello World", "+447700000001", "06 Apr 2026 10:30:00 BST", "060426-001")
+	html := buildHTMLEmail("Hello World", "+447700000001", "06 Apr 2026 10:30:00 BST")
 	// Meta table (From/Received/Reference) should appear before message body
 	fromIdx := strings.Index(html, ">From<")
 	bodyIdx := strings.Index(html, ">Hello World<")
@@ -395,14 +388,14 @@ func TestBuildHTMLEmail_MetaBeforeMessage(t *testing.T) {
 }
 
 func TestBuildHTMLEmail_NoFooterInstructions(t *testing.T) {
-	html := buildHTMLEmail("Test", "+447700000001", "06 Apr 2026", "060426-001")
+	html := buildHTMLEmail("Test", "+447700000001", "06 Apr 2026")
 	if strings.Contains(html, "Reply to this email") || strings.Contains(html, "Keep replies under") {
 		t.Fatal("expected no reply instructions in HTML")
 	}
 }
 
 func TestBuildHTMLEmail_EscapesHTML(t *testing.T) {
-	html := buildHTMLEmail("<script>alert('xss')</script>", "+447700000001", "06 Apr 2026", "060426-001")
+	html := buildHTMLEmail("<script>alert('xss')</script>", "+447700000001", "06 Apr 2026")
 	if strings.Contains(html, "<script>") {
 		t.Fatal("expected HTML escaping in message body")
 	}
@@ -412,7 +405,7 @@ func TestBuildHTMLEmail_EscapesHTML(t *testing.T) {
 }
 
 func TestBuildHTMLEmail_PreservesLineBreaks(t *testing.T) {
-	html := buildHTMLEmail("Line 1\nLine 2", "+447700000001", "06 Apr 2026", "060426-001")
+	html := buildHTMLEmail("Line 1\nLine 2", "+447700000001", "06 Apr 2026")
 	if !strings.Contains(html, "<br>") {
 		t.Fatal("expected <br> tags for line breaks")
 	}
@@ -422,7 +415,7 @@ func TestBuildHTMLEmail_WithLogo(t *testing.T) {
 	SetLogoBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 	defer SetLogoBase64("")
 
-	html := buildHTMLEmail("Test", "+447700000001", "06 Apr 2026", "060426-001")
+	html := buildHTMLEmail("Test", "+447700000001", "06 Apr 2026")
 	if !strings.Contains(html, "cid:logo-image") {
 		t.Fatal("expected cid:logo-image in HTML when logo is set")
 	}
@@ -430,7 +423,7 @@ func TestBuildHTMLEmail_WithLogo(t *testing.T) {
 
 func TestBuildHTMLEmail_WithoutLogo(t *testing.T) {
 	SetLogoBase64("")
-	html := buildHTMLEmail("Test", "+447700000001", "06 Apr 2026", "060426-001")
+	html := buildHTMLEmail("Test", "+447700000001", "06 Apr 2026")
 	if strings.Contains(html, "cid:logo-image") {
 		t.Fatal("expected no cid:logo-image when logo is not set")
 	}
@@ -445,11 +438,11 @@ func TestBuildDeliveryHTML_Success(t *testing.T) {
 	if !strings.Contains(html, "+447700000001") {
 		t.Fatal("expected recipient number in HTML")
 	}
-	if !strings.Contains(html, "42") {
-		t.Fatal("expected modem ref in HTML")
+	if strings.Contains(html, "Modem Ref") {
+		t.Fatal("expected no modem ref row in success HTML")
 	}
-	if strings.Contains(html, "Reason") {
-		t.Fatal("expected no reason row in success HTML")
+	if strings.Contains(html, "42") {
+		t.Fatal("expected no modem ref value in success HTML")
 	}
 }
 

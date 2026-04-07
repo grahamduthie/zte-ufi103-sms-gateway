@@ -452,7 +452,7 @@ func processSendQueue(at *atcmd.Session, db *database.DB, bridge *email.Bridge, 
 				db.MarkSendQueueFailed(entry.ID, reason)
 				logger.Printf("Giving up on SMS to %s after %d attempts", entry.ToNumber, maxSendAttempts)
 				if bridge != nil {
-					if cerr := bridge.SendDeliveryConfirmation(entry.ToNumber, entry.Body, false, 0, reason); cerr != nil {
+					if cerr := bridge.SendDeliveryConfirmation(entry.ToNumber, entry.Body, false, 0, reason, entry.SessionPrefix); cerr != nil {
 						logger.Printf("Delivery confirmation email failed: %v", cerr)
 					}
 				}
@@ -464,7 +464,7 @@ func processSendQueue(at *atcmd.Session, db *database.DB, bridge *email.Bridge, 
 			db.MarkSendQueueSent(entry.ID, ref)
 			db.SetHealth("last_send_time", time.Now().UTC().Format(time.RFC3339))
 			if bridge != nil {
-				if cerr := bridge.SendDeliveryConfirmation(entry.ToNumber, entry.Body, true, ref, ""); cerr != nil {
+				if cerr := bridge.SendDeliveryConfirmation(entry.ToNumber, entry.Body, true, ref, "", entry.SessionPrefix); cerr != nil {
 					logger.Printf("Delivery confirmation email failed: %v", cerr)
 				}
 			}

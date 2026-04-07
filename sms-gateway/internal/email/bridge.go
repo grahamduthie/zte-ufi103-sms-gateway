@@ -151,15 +151,23 @@ func (b *Bridge) ForwardMessage(msg database.Message) error {
 }
 
 // SendDeliveryConfirmation emails Graham when a queued SMS reply is sent or permanently fails.
-func (b *Bridge) SendDeliveryConfirmation(toNumber, body string, success bool, ref int, failReason string) error {
+func (b *Bridge) SendDeliveryConfirmation(toNumber, body string, success bool, ref int, failReason, sessionPrefix string) error {
 	var subject, statusIcon, statusText, statusColor string
 	if success {
-		subject = fmt.Sprintf("SMS delivered to %s", toNumber)
+		if sessionPrefix != "" {
+			subject = fmt.Sprintf("Re: Text to %s [%s]", toNumber, sessionPrefix)
+		} else {
+			subject = fmt.Sprintf("SMS delivered to %s", toNumber)
+		}
 		statusIcon = "✅"
 		statusText = "Delivered Successfully"
 		statusColor = "#16a34a"
 	} else {
-		subject = fmt.Sprintf("SMS delivery FAILED to %s", toNumber)
+		if sessionPrefix != "" {
+			subject = fmt.Sprintf("Re: Text to %s [%s]", toNumber, sessionPrefix)
+		} else {
+			subject = fmt.Sprintf("SMS delivery FAILED to %s", toNumber)
+		}
 		statusIcon = "❌"
 		statusText = "Delivery Failed"
 		statusColor = "#dc2626"
@@ -503,7 +511,7 @@ func (b *Bridge) processReply(imapMsg *imap.Message, c *client.Client) error {
 		body = strings.TrimSpace(trunc)
 	}
 
-	_, err = b.db.EnqueueSMS(sender, body, "email_reply")
+	_, err = b.db.EnqueueSMS(sender, body, "email_reply", prefix)
 	if err != nil {
 		return fmt.Errorf("enqueue sms: %w", err)
 	}

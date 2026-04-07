@@ -38,6 +38,7 @@ type SendQueueEntry struct {
 	ModemRef      sql.NullInt64
 	Source        string
 	Attempts      int
+	SessionPrefix string
 }
 
 // Open opens (or creates) the SQLite database and initialises the schema.
@@ -97,7 +98,8 @@ CREATE TABLE IF NOT EXISTS send_queue (
     modem_ref      INTEGER,
     source         TEXT NOT NULL DEFAULT 'email_reply',
     attempts       INTEGER DEFAULT 0,
-    next_retry_at  TEXT
+    next_retry_at  TEXT,
+    session_prefix TEXT
 );
 
 CREATE TABLE IF NOT EXISTS daemon_health (
@@ -129,6 +131,8 @@ CREATE TABLE IF NOT EXISTS settings (
 func (d *DB) Migrate() {
 	// next_retry_at added for send-queue exponential backoff (2026-04-04)
 	d.Exec(`ALTER TABLE send_queue ADD COLUMN next_retry_at TEXT`)
+	// session_prefix added for email threading on delivery confirmations (2026-04-07)
+	d.Exec(`ALTER TABLE send_queue ADD COLUMN session_prefix TEXT`)
 }
 
 // Create indexes (idempotent with IF NOT EXISTS workaround via try)
@@ -245,7 +249,8 @@ func (d *DB) IncrementForwardAttempts(id int64) error {
 func (d *DB) GetPendingSendQueue() ([]SendQueueEntry, error) {
 	rows, err := d.Query(
 		`SELECT id, to_number, body, created_at, status, COALESCE(sent_at,''),
-                COALESCE(failure_reason,''), COALESCE(modem_ref,0), source, COALESCE(attempts,0)
+                COALESCE(failure_reason,''), COALESCE(modem_ref,0), source, COALESCE(attempts,0),
+                COALESCE(session_prefix,'')
          FROM send_queue
          WHERE status = 'pending'
            AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
@@ -260,7 +265,7 @@ func (d *DB) GetPendingSendQueue() ([]SendQueueEntry, error) {
 	for rows.Next() {
 		var e SendQueueEntry
 		err := rows.Scan(&e.ID, &e.ToNumber, &e.Body, &e.CreatedAt, &e.Status,
-			&e.SentAt, &e.FailureReason, &e.ModemRef, &e.Source, &e.Attempts)
+			&e.SentAt, &e.FailureReason, &e.ModemRef, &e.Source, &e.Attempts, &e.SessionPrefix)
 		if err != nil {
 			return nil, err
 		}
@@ -308,7 +313,7 @@ func (d *DB) IncrementSendAttempts(id int64, attempts int, reason string) error 
 }
 
 // EnqueueSMS adds a new outbound SMS to the send queue.
-func (d *DB) EnqueueSMS(toNumber, body, source string) (int64, error) {
+func (d *DB) EnqueueSMS(toNumber, body, source, sessionPrefix string) (int64, error) {
 	if toNumber == "" {
 		return 0, fmt.Errorf("to_number must not be empty")
 	}
@@ -317,8 +322,8 @@ func (d *DB) EnqueueSMS(toNumber, body, source string) (int64, error) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := d.Exec(
-		`INSERT INTO send_queue (to_number, body, created_at, source) VALUES (?, ?, ?, ?)`,
-		toNumber, body, now, source,
+		`INSERT INTO send_queue (to_number, body, created_at, source, session_prefix) VALUES (?, ?, ?, ?, ?)`,
+		toNumber, body, now, source, sessionPrefix,
 	)
 	if err != nil {
 		return 0, err

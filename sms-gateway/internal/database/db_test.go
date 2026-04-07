@@ -213,7 +213,7 @@ func TestLookupSenderByPrefix_NotFound(t *testing.T) {
 func TestEnqueueSMS(t *testing.T) {
 	db := openTestDB(t)
 
-	id, err := db.EnqueueSMS("+447700000001", "Reply message", "email_reply")
+	id, err := db.EnqueueSMS("+447700000001", "Reply message", "email_reply", "")
 	if err != nil {
 		t.Fatalf("EnqueueSMS failed: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestEnqueueSMS(t *testing.T) {
 func TestEnqueueSMS_EmptyNumber(t *testing.T) {
 	db := openTestDB(t)
 
-	_, err := db.EnqueueSMS("", "Reply message", "email_reply")
+	_, err := db.EnqueueSMS("", "Reply message", "email_reply", "")
 	if err == nil {
 		t.Fatal("expected error for empty number, got nil")
 	}
@@ -234,11 +234,11 @@ func TestEnqueueSMS_EmptyNumber(t *testing.T) {
 func TestGetPendingSendQueue(t *testing.T) {
 	db := openTestDB(t)
 
-	_, err := db.EnqueueSMS("+447700000001", "Message 1", "email_reply")
+	_, err := db.EnqueueSMS("+447700000001", "Message 1", "email_reply", "")
 	if err != nil {
 		t.Fatalf("EnqueueSMS failed: %v", err)
 	}
-	_, err = db.EnqueueSMS("+447700000001", "Message 2", "email_reply")
+	_, err = db.EnqueueSMS("+447700000001", "Message 2", "email_reply", "")
 	if err != nil {
 		t.Fatalf("EnqueueSMS failed: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestGetPendingSendQueue_Empty(t *testing.T) {
 func TestMarkSendQueueSent(t *testing.T) {
 	db := openTestDB(t)
 
-	id, err := db.EnqueueSMS("+447700000001", "Test", "email_reply")
+	id, err := db.EnqueueSMS("+447700000001", "Test", "email_reply", "")
 	if err != nil {
 		t.Fatalf("EnqueueSMS failed: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestMarkSendQueueSent(t *testing.T) {
 func TestMarkSendQueueFailed(t *testing.T) {
 	db := openTestDB(t)
 
-	id, err := db.EnqueueSMS("+447700000001", "Test", "email_reply")
+	id, err := db.EnqueueSMS("+447700000001", "Test", "email_reply", "")
 	if err != nil {
 		t.Fatalf("EnqueueSMS failed: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestMarkSendQueueFailed(t *testing.T) {
 func TestIncrementSendAttempts(t *testing.T) {
 	db := openTestDB(t)
 
-	id, err := db.EnqueueSMS("+447700000001", "Test", "email_reply")
+	id, err := db.EnqueueSMS("+447700000001", "Test", "email_reply", "")
 	if err != nil {
 		t.Fatalf("EnqueueSMS failed: %v", err)
 	}
@@ -446,7 +446,7 @@ func TestGetSentMessages(t *testing.T) {
 	db := openTestDB(t)
 
 	// Insert and mark as sent
-	id, err := db.EnqueueSMS("+447700000001", "Sent SMS", "web_ui")
+	id, err := db.EnqueueSMS("+447700000001", "Sent SMS", "web_ui", "")
 	if err != nil {
 		t.Fatalf("EnqueueSMS failed: %v", err)
 	}
@@ -470,7 +470,7 @@ func TestGetFailedSendQueue(t *testing.T) {
 	db := openTestDB(t)
 
 	// Insert a message
-	id, err := db.EnqueueSMS("+447700000001", "Will fail", "email_reply")
+	id, err := db.EnqueueSMS("+447700000001", "Will fail", "email_reply", "")
 	if err != nil {
 		t.Fatalf("EnqueueSMS failed: %v", err)
 	}
@@ -631,7 +631,7 @@ func TestConversation_MixedInboundOutbound(t *testing.T) {
 	db.InsertMessage("+447700111111", "Hi there", 1)
 	time.Sleep(1100 * time.Millisecond)
 	// Outbound
-	db.EnqueueSMS("+447700111111", "Hello back", "web")
+	db.EnqueueSMS("+447700111111", "Hello back", "web", "")
 	time.Sleep(1100 * time.Millisecond)
 	// Another inbound
 	db.InsertMessage("+447700111111", "How are you?", 2)

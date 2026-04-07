@@ -333,7 +333,7 @@ func (s *Server) handleComposePost(w http.ResponseWriter, r *http.Request) {
 		body = body[:160]
 	}
 
-	_, err := s.db.EnqueueSMS(number, body, "web")
+	_, err := s.db.EnqueueSMS(number, body, "web", "")
 	if err != nil {
 		http.Error(w, "Failed to queue message: "+err.Error(), http.StatusInternalServerError)
 		return

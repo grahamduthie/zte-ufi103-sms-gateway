@@ -9,7 +9,6 @@ import (
 	"marlowfm.co.uk/sms-gateway/internal/config"
 	"marlowfm.co.uk/sms-gateway/internal/database"
 	"net/http"
-	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -516,15 +515,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Schedule a restart so new config takes effect (skip in test mode).
-	if !strings.HasSuffix(os.Args[0], ".test") && !strings.HasSuffix(os.Args[0], "_test") {
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
-		}()
-	}
-
-	http.Redirect(w, r, "/restarting", http.StatusSeeOther)
+	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
 }
 
 // handleRestarting shows a "restarting" page that polls /status until the gateway is back.

@@ -470,6 +470,14 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		}()
 		http.Redirect(w, r, "/restarting", http.StatusSeeOther)
 		return
+	case "shutdown":
+		// Power off cleanly — user must unplug and replug to turn back on
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			exec.Command("/system/xbin/librank", "/system/bin/sh", "-c", "setprop sys.powerctl shutdown").Run()
+		}()
+		http.Redirect(w, r, "/restarting", http.StatusSeeOther)
+		return
 	}
 
 	// Update in-memory config from form values (only fields shown on the page).

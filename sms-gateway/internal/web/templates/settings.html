@@ -125,6 +125,9 @@
             <form method="POST" action="/settings?action=reboot" onsubmit="return confirm('Reboot the entire dongle? This will take ~60 seconds.')">
                 <button type="submit" class="btn-danger">Reboot Dongle</button>
             </form>
+            <form method="POST" action="/settings?action=shutdown" onsubmit="return confirm('Shut down the dongle? You will need to unplug and replug to power it on again.')">
+                <button type="submit" class="btn-danger">Shut Down Dongle</button>
+            </form>
         </div>
     </div>
 </main>

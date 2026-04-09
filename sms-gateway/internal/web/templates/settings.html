@@ -92,7 +92,7 @@
             <header><strong>SMS Polling</strong></header>
             <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
                 <label>SMS Poll Interval (seconds)
-                    <input type="number" name="sms_poll_interval" value="{{.Cfg.SMS.PollIntervalSec}}" min="5" max="300">
+                    <input type="number" name="sms_poll_interval" value="{{.Cfg.SMS.PollIntervalSec}}" min="1" max="300">
                 </label>
                 <label>Email Poll Interval (seconds)
                     <input type="number" name="imap_poll_interval" value="{{.Cfg.IMAPPollInterval}}" min="30" max="600">

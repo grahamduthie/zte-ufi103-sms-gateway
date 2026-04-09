@@ -9,6 +9,7 @@ import (
 	"marlowfm.co.uk/sms-gateway/internal/config"
 	"marlowfm.co.uk/sms-gateway/internal/database"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -54,6 +55,7 @@ func (s *Server) setupHandler() {
 	mux.HandleFunc("/compose", s.requireAuth(s.handleCompose))
 	mux.HandleFunc("/conversation", s.requireAuth(s.handleConversation))
 	mux.HandleFunc("/settings", s.requireAuth(s.handleSettings))
+	mux.HandleFunc("/restarting", s.handleRestarting)
 	mux.HandleFunc("/status", s.requireAuth(s.handleStatus))
 
 	staticSub, _ := fs.Sub(staticFS, "static")
@@ -183,6 +185,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/compose", s.requireAuth(s.handleCompose))
 	mux.HandleFunc("/conversation", s.requireAuth(s.handleConversation))
 	mux.HandleFunc("/settings", s.requireAuth(s.handleSettings))
+	mux.HandleFunc("/restarting", s.handleRestarting)
 	mux.HandleFunc("/status", s.requireAuth(s.handleStatus))
 
 	// Static files
@@ -455,10 +458,9 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		// Kill ourselves — start.sh's crash-restart loop will restart us
 		go func() {
 			time.Sleep(500 * time.Millisecond)
-			// Send SIGTERM to self
 			syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
 		}()
-		http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
+		http.Redirect(w, r, "/restarting", http.StatusSeeOther)
 		return
 	case "reboot":
 		// Issue reboot via librank (we may not have root directly)
@@ -466,7 +468,7 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			time.Sleep(500 * time.Millisecond)
 			exec.Command("/system/xbin/librank", "/system/bin/reboot").Run()
 		}()
-		http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
+		http.Redirect(w, r, "/restarting", http.StatusSeeOther)
 		return
 	}
 
@@ -506,5 +508,71 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
+	// Schedule a restart so new config takes effect (skip in test mode).
+	if !strings.HasSuffix(os.Args[0], ".test") && !strings.HasSuffix(os.Args[0], "_test") {
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+		}()
+	}
+
+	http.Redirect(w, r, "/restarting", http.StatusSeeOther)
+}
+
+// handleRestarting shows a "restarting" page that polls /status until the gateway is back.
+func (s *Server) handleRestarting(w http.ResponseWriter, r *http.Request) {
+	restartingHTML := `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="refresh" content="2">
+<title>Restarting — SMS Gateway</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         background:#f4f4f4; display:flex; align-items:center; justify-content:center;
+         min-height:100vh; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 2px 16px rgba(0,0,0,0.1);
+          padding:48px 32px; text-align:center; max-width:380px; width:90%%; }
+  .spinner { width:48px; height:48px; border:4px solid #e5e7eb; border-top-color:#1a1a2e;
+             border-radius:50%%; animation:spin 0.8s linear infinite; margin:0 auto 20px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  h2 { color:#1a1a2e; font-size:1.2rem; margin-bottom:8px; }
+  p { color:#6b7280; font-size:.9rem; }
+  .dots::after { content:''; animation:dots 1.5s steps(3,end) infinite; }
+  @keyframes dots { 0%%{content:''} 33%%{content:'.'} 66%%{content:'..'} 100%%{content:'...'} }
+  .countdown { margin-top:16px; font-size:.8rem; color:#9ca3af; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="spinner"></div>
+  <h2>Gateway Restarting</h2>
+  <p>Settings saved. Restarting SMS gateway<span class="dots"></span></p>
+  <p class="countdown">You will be redirected automatically.</p>
+</div>
+<script>
+  // Poll /status every 3 seconds — when it responds, redirect to dashboard
+  var attempts = 0;
+  function check() {
+    attempts++;
+    fetch('/status', { method: 'HEAD' })
+      .then(function(r) {
+        if (r.ok) {
+          window.location.href = '/';
+        }
+      })
+      .catch(function() {
+        // still down, keep spinning
+      });
+  }
+  setInterval(check, 3000);
+  // Also redirect after 30 seconds as a safety net
+  setTimeout(function() { window.location.href = '/'; }, 30000);
+</script>
+</body>
+</html>`
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, restartingHTML)
 }

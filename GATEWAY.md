@@ -136,23 +136,20 @@ already injected). `promptCh` solves this with an immediate flush + signal.
 
 ### Init service
 
-The gateway runs as a named service (`sms-gw`) in `/init.target.rc`:
-```
-service sms-gw /system/bin/sh /data/sms-gateway/start.sh
-    class main
-    user root
-    group root
-    disabled
-
-on property:sys.boot_completed=1
-    start sms-gw
-```
+The gateway is launched via the `qrngp` wrapper script (in `/init.target.rc`),
+which runs `/data/sms-gateway/start.sh` on `sys.boot_completed=1`. `qrngp` is a
+shell wrapper that sleeps 30 seconds then invokes `start.sh` via `librank`.
 
 `start.sh` is the service's **foreground main process** — it never exits
 (crash-restart loop), so Android init never tears down the cgroup.
 
 There is also a legacy `userinit.sh` boot hook (at `/data/local/userinit.sh`)
 that also tries to start `start.sh`. The PID file guard handles this correctly.
+
+**Warning**: After an abrupt disconnect (e.g. pulling the USB cable), the stale
+`gateway.pid` file can prevent the gateway from starting on next boot. Delete
+`/data/sms-gateway/gateway.pid` before rebooting if you encounter this, or use
+the **Shut Down Dongle** button in the web UI for a clean power-off.
 
 ### Single-instance guard (PID file)
 
@@ -264,7 +261,8 @@ CREATE TABLE send_queue (
     modem_ref      INTEGER,
     source         TEXT NOT NULL DEFAULT 'email_reply',
     attempts       INTEGER DEFAULT 0,
-    next_retry_at  TEXT
+    next_retry_at  TEXT,
+    session_prefix TEXT
 );
 
 CREATE TABLE daemon_health (
@@ -299,7 +297,8 @@ CREATE TABLE daemon_health (
 | `/sent` | GET | Paginated sent SMS (50/page) |
 | `/conversation` | GET | **Conversation list** (30/page with pagination) or single thread with chat bubbles |
 | `/compose` | GET/POST | Manual SMS send form |
-| `/settings` | GET/POST | Configuration + Danger Zone (Restart Gateway / Reboot Dongle) |
+| `/settings` | GET/POST | Configuration + Danger Zone (Restart Gateway / Reboot Dongle / Shut Down Dongle) |
+| `/restarting` | GET | Spinner page — polls `/status`, redirects to `/` when gateway is back |
 | `/status` | GET | JSON health endpoint (auth required) |
 
 **Auth**: All routes except `/login`, `/logout`, and `/static/*` require the `gw_auth` cookie (set by logging in with password `mfm`).

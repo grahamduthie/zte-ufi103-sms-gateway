@@ -466,3 +466,19 @@ changes. Check `mbu.Mailbox.Messages` to know if there are new messages.
 | 33 | Conversation pagination + indexes | ✅ `idx_messages_sender_time` and `idx_queue_tonumber_time` |
 | 34 | Nav reorganisation | ✅ Conversations between Sent and Compose, Inbox→Received |
 | 35 | Logo update | ✅ Square mfm_logo.png at 48px in top bar |
+
+---
+
+## Additional Items Completed (2026-04-09)
+
+| # | Task | Status |
+|---|------|--------|
+| 36 | Conversation thread order fixed | ✅ Messages now oldest-first (chronological), not reverse |
+| 37 | Delivery confirmation email threading | ✅ Subject matches original SMS: `Re: Text from +44... [DDMMYY-NNN]` |
+| 38 | Email template cleanup | ✅ Removed Reference row from forwarded SMS, Modem Ref from delivery emails |
+| 39 | Multi-network WiFi | ✅ YOUR_WIFI_SSID_1, YOUR_WIFI_SSID_2, YOUR_WIFI_SSID_3 — priority-ordered fallback |
+| 40 | Settings page poll interval min fix | ✅ HTML `min=1` matches Go validation `>= 1` (was `min=5`) |
+| 41 | Shut Down Dongle button | ✅ Clean power-off via `sys.powerctl shutdown` |
+| 42 | /restarting page | ✅ Spinner page polls /status, auto-redirects when gateway is back |
+| 43 | Boot persistence mechanism clarified | ✅ `qrngp` wrapper (not named init service) — see Bug 14 in BUGS.md |
+| 44 | Settings save auto-restart reverted | ✅ Save just persists config; use Restart Gateway in Danger Zone |

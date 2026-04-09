@@ -380,3 +380,38 @@ commands in received text.
 ---
 
 *See also: `STATUS.md` (current status), `GATEWAY.md` (architecture), `REFACTOR_PLAN.md` (fix plan), `DEVICE.md` (hardware and RILD details)*
+
+---
+
+## Bug 14: Stale PID File Blocks Boot After Abrupt Disconnect (Fixed — 2026-04-09)
+
+### Symptom
+After abruptly unplugging the USB cable (no clean shutdown), the gateway fails
+to start on next boot. `start.sh` sees the old `gateway.pid` file, checks
+whether the recorded PID is alive, and sometimes finds a different process
+with that PID — causing `start.sh` to exit with "already running".
+
+### Root cause
+`gateway.pid` is written by `start.sh` and cleaned up via a `trap` on EXIT.
+When the device is yanked without shutdown, the `trap` never fires and the
+PID file persists. On next boot, the PID number may coincidentally be reused
+by an unrelated process (e.g. `zygote`), causing `kill -0` to return success.
+
+### Fix
+Two mitigations:
+1. **Shut Down Dongle** button added to the web UI Danger Zone — issues
+   `setprop sys.powerctl shutdown` for a clean power-off, ensuring the trap
+   fires and `gateway.pid` is removed.
+2. **Boot persistence** now uses the `qrngp` wrapper (in `/init.target.rc`)
+   instead of a named init service.
+
+### Workaround
+If the gateway won't start after boot, delete the stale PID file:
+```bash
+adb shell "busybox rm -f /data/sms-gateway/gateway.pid"
+adb shell "setprop ctl.start sms-gw"
+```
+
+---
+
+*See also: `STATUS.md` (current status), `GATEWAY.md` (architecture), `DEVICE.md` (hardware and RILD details)*

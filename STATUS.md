@@ -1,6 +1,6 @@
 # ZTE UFI103 SMS Gateway — Status & Quick Reference
 
-*Last updated: 2026-04-06 14:25 BST (Bug 13 fixed — RILD injection in SMS send eliminated, see BUGS.md)*
+*Last updated: 2026-04-09 21:30 BST*
 *Device Serial: 19ce8266*
 
 ---
@@ -11,33 +11,36 @@
 |---------|--------|-------|
 | Permanent root | ✅ | `/system/xbin/librank` = SUID rootshell (survives reboots) |
 | SMS receive | ✅ | Polls SIM every 2s, imports to SQLite, deletes from SIM |
-| SMS → Email | ✅ | **HTML emails** with Marlow FM logo, From/Received/Reference, subject: `Text from +44... [060426-001]` |
+| SMS → Email | ✅ | **HTML emails** with Marlow FM logo, From/Received. Subject: `Text from +44... [DDMMYY-NNN]` |
 | Email → SMS | ✅ | IMAP IDLE picks up replies; **Bug 13 fixed** — PDU mode + `promptCh` beats RILD injection |
 | SMS send | ✅ | Sequential write approach (no intermediate reads) |
 | Web UI | ✅ | **Port 80** with password gate (`mfm`) — Dashboard, Received, Sent, Conversations, Compose, Settings |
-| WiFi client | ✅ | Connected to `YOUR_WIFI_SSID_1`, has internet access |
+| WiFi client | ✅ | Multi-network: YOUR_WIFI_SSID_1 (home), YOUR_WIFI_SSID_2, YOUR_WIFI_SSID_3 (fallback locations) |
 | Quoted-printable decode | ✅ | Smart quotes → regular apostrophes (multi-byte UTF-8 fixed) |
 | Quote stripping | ✅ | Strips "On ... wrote:" blocks from email replies |
 | SIM auto-unlock | ✅ | Proactive check at start of every SMS poll; SIM PIN lock removed |
 | Shell injection fix | ✅ | `send_shell.go` deprecated + input validation on all SMS send paths |
 | Automated tests | ✅ | **130 tests across 5 packages — all passing** |
-| Boot persistence | ✅ | `sms-gw` service in `/init.target.rc` — triggers on `sys.boot_completed=1` |
+| Boot persistence | ✅ | `qrngp` wrapper in `/init.target.rc` — triggers on `sys.boot_completed=1` |
 | WiFi auto-setup on boot | ✅ | `start.sh` switches to client mode via `wifi-setup.sh` + dynamic DHCP |
 | Single-instance guard | ✅ | PID file in `start.sh` prevents duplicate gateway processes |
 | Log housekeeping | ✅ | Hourly rotation at 10 MB, WAL checkpoint, 90-day record pruning |
 | WiFi watchdog | ✅ | Soft-reconnect (wpa_supplicant restart) if wlan0 loses IP — no rmmod |
 | Conversation pagination | ✅ | 30 per page with indexes on `(sender, received_at)` and `(to_number, created_at)` |
 | Dashboard | ✅ | Monthly counts, last sent/received (UK time), gateway status, uptime |
-| Settings controls | ✅ | Restart Gateway and Reboot Dongle buttons in Danger Zone |
+| Settings controls | ✅ | Save config, Restart Gateway, Reboot Dongle, Shut Down Dongle |
 | Auth gate | ✅ | Password `mfm` required for all routes except `/login`, `/logout`, `/static/*` |
 | Logo embedding | ✅ | Logo loaded at startup, embedded as CID attachment in HTML emails |
 | Date-based session IDs | ✅ | Format `DDMMYY-NNN` (e.g. `060426-001`), stored in `daemon_health` |
+| Email threading | ✅ | Delivery confirmations use matching `Re: Text from +44... [DDMMYY-NNN]` subject |
+| Restart page | ✅ | `/restarting` shows spinner, auto-redirects when gateway is back |
 
 ## Active Investigation 🔍
 
 | Issue | Status | Notes |
 |-------|--------|-------|
 | USB mode cycling on host PC | ⚠️ Known | ModemManager probes `cdc-wdm0` (DIAG interface), triggers firmware USB re-enumeration. Does **not** affect gateway operation. Stops when ModemManager gives up. |
+| Driver reload limit | ⚠️ Known | pronto_wlan.ko cannot be rmmod/insmod'd more than once per boot session. After that, wlan0 disappears entirely. Only a clean reboot recovers. |
 
 ## What Doesn't Work ❌
 
@@ -50,12 +53,11 @@
 
 | Property | Value |
 |----------|-------|
-| Network | Spusu (MVNO on EE UK) |
-| IMSI | 234405564246923 |
+| Network | O2 - UK giffgaff |
 | Number | +447700000002 |
 | SMSC | +447356000010 |
 | SIM PIN | ~~8837~~ **removed** (disabled via `AT+CLCK="SC",0,"8837"`) |
-| Signal | ~-73 dBm, 3 bars |
+| Signal | ~-71 dBm, 3 bars |
 | Storage | SM (SIM) = 20 slots |
 
 ---
@@ -72,8 +74,8 @@ lsusb | grep 05c6          # → 05c6:90b4 Qualcomm Android
 #               http://192.168.100.1/
 
 # Check status (needs auth cookie):
-curl -s -c /tmp/gw.txt http://192.168.100.1/login -X POST -d "password=mfm"
-curl -s -b /tmp/gw.txt http://192.168.100.1/status | python3 -m json.tool
+curl -s -c /tmp/gw.txt http://172.16.10.226/login -X POST -d "password=mfm"
+curl -s -b /tmp/gw.txt http://172.16.10.226/status | python3 -m json.tool
 
 # View live log:
 adb shell "busybox tail -f /data/sms-gateway/sms-gateway.log"
@@ -95,7 +97,7 @@ adb shell "/system/xbin/librank /system/bin/busybox kill \$(busybox ps | busybox
 sleep 2
 adb shell "/system/xbin/librank /system/bin/busybox mv /data/sms-gateway/sms-gateway.new /data/sms-gateway/sms-gateway"
 # Wait ~10s for start.sh to restart the gateway, then check:
-sleep 12 && curl -s http://192.168.100.1/status | python3 -m json.tool
+sleep 12 && curl -s http://172.16.10.226/status | python3 -m json.tool
 ```
 
 **IMPORTANT**: The gateway process is owned by root (uid=0, started by the init
@@ -131,7 +133,7 @@ adb shell "setprop ctl.start sms-gw"
 └── scripts/             # WiFi setup scripts
 
 /data/misc/wifi/
-├── wpa_supplicant.conf  # WiFi client config
+├── wpa_supplicant.conf  # WiFi client config (multi-network: YOUR_WIFI_SSID_1, YOUR_WIFI_SSID_2, YOUR_WIFI_SSID_3)
 └── sockets/             # wpa_supplicant socket directory
 ```
 

@@ -13,7 +13,7 @@
 | Build | 2024-03-26, test-keys |
 | Serial | 19ce8266 |
 | IMEI | 867041077886923 |
-| WiFi | Qualcomm WCNSS PRONTO — **2.4GHz only** |
+| WiFi | Qualcomm WCNSS PRONTO — **2.4GHz only** | Multi-network: YOUR_WIFI_SSID_1, YOUR_WIFI_SSID_2, YOUR_WIFI_SSID_3 |
 
 ## USB Modes
 
@@ -115,6 +115,7 @@ insmod /system/lib/modules/pronto/pronto_wlan.ko
 sleep 5
 
 # 4. Write wpa_supplicant config (SSID is CASE-SENSITIVE)
+# Multiple networks with priority ordering (1 = highest priority)
 cat > /data/misc/wifi/wpa_supplicant.conf << 'EOF'
 ctrl_interface=/data/misc/wifi/sockets
 update_config=1
@@ -123,6 +124,13 @@ network={
     ssid="EXACT_SSID_CASE"
     psk="password"
     key_mgmt=WPA-PSK
+    priority=1
+}
+network={
+    ssid="FALLBACK_SSID"
+    psk="password"
+    key_mgmt=WPA-PSK
+    priority=2
 }
 EOF
 

@@ -290,7 +290,7 @@ CREATE TABLE daemon_health (
 
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/login` | POST | Password gate (password: `mfm`) |
+| `/login` | POST | Password gate (see `web.admin_password` in config.json) |
 | `/logout` | POST | Clear auth cookie |
 | `/` | GET | Dashboard — monthly counts, last sent/received (UK time), gateway status, uptime, recent messages |
 | `/inbox` | GET | Paginated received SMS (20/page) — now labelled "Received" |
@@ -301,7 +301,7 @@ CREATE TABLE daemon_health (
 | `/restarting` | GET | Spinner page — polls `/status`, redirects to `/` when gateway is back |
 | `/status` | GET | JSON health endpoint (auth required) |
 
-**Auth**: All routes except `/login`, `/logout`, and `/static/*` require the `gw_auth` cookie (set by logging in with password `mfm`).
+**Auth**: All routes except `/login`, `/logout`, and `/static/*` require the `gw_auth` cookie (set by logging in with the password from `web.admin_password` in config.json).
 
 ## Build Process
 

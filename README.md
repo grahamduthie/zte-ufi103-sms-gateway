@@ -20,7 +20,7 @@ adb shell "/system/xbin/librank /system/bin/busybox mv \
   /data/sms-gateway/sms-gateway.new /data/sms-gateway/sms-gateway"
 ```
 
-**Web UI**: `http://172.16.10.226/` (password: `mfm`)
+**Web UI**: `http://172.16.10.226/` (password is set in `config.json` → `web.admin_password`)
 
 ## Features
 

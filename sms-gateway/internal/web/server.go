@@ -15,7 +15,6 @@ import (
 	"time"
 )
 
-const gatewayPassword = "mfm"
 const authCookieName = "gw_auth"
 
 type Server struct {
@@ -197,7 +196,7 @@ func (s *Server) Start() error {
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		r.ParseForm()
-		if r.FormValue("password") == gatewayPassword {
+		if s.cfg.Web.AdminPassword != "" && r.FormValue("password") == s.cfg.Web.AdminPassword {
 			http.SetCookie(w, &http.Cookie{
 				Name:     authCookieName,
 				Value:    "1",

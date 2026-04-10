@@ -71,7 +71,8 @@ func DefaultConfig() *Config {
 			Mode: "client",
 		},
 		Web: WebConfig{
-			ListenAddr: "0.0.0.0:80",
+			ListenAddr:    "0.0.0.0:80",
+			AdminPassword: "", // must be set in config.json on the device
 		},
 		AuthorisedSenders: []string{"your-email@example.com"},
 		SMSMaxReplyChars:  160,

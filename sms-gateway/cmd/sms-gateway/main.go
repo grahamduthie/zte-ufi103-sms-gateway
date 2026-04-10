@@ -290,6 +290,30 @@ func main() {
 		runWiFiWatchdog(ctx, logger)
 	}()
 
+	// SIM keepalive — sends a chargeable text if >5 months since the last one.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Printf("SIM keepalive recovered from panic: %v", r)
+			}
+		}()
+		runSIMKeepalive(ctx, db, bridge, logger)
+	}()
+
+	// Balance checker — sends "INFO" to GiffGaff every Sunday ~10am UK time.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Printf("Balance checker recovered from panic: %v", r)
+			}
+		}()
+		runBalanceChecker(ctx, db, bridge, logger)
+	}()
+
 	// Housekeeping — log rotation, WAL checkpoint, old record pruning.
 	wg.Add(1)
 	go func() {
@@ -399,6 +423,7 @@ func processSMS(at *atcmd.Session, db *database.DB, bridge *email.Bridge, cfg *c
 					continue
 				}
 				logger.Printf("Imported SMS from %s (SIM index %d)", msg.Sender, msg.Index)
+				handleIncomingBalanceResponse(db, bridge, logger, msgID, msg.Sender, msg.Text)
 
 				if cfg.SMS.DeleteAfterFwd {
 					if err := at.DeleteSMS(msg.Index); err != nil {
@@ -463,7 +488,12 @@ func processSendQueue(at *atcmd.Session, db *database.DB, bridge *email.Bridge, 
 			logger.Printf("SMS sent to %s (ref=%d)", entry.ToNumber, ref)
 			db.MarkSendQueueSent(entry.ID, ref)
 			db.SetHealth("last_send_time", time.Now().UTC().Format(time.RFC3339))
-			if bridge != nil {
+			// Track chargeable texts for SIM keepalive (balance_check SMSes don't count).
+			if entry.Source != "balance_check" {
+				db.SetHealth("last_chargeable_sms_at", time.Now().UTC().Format(time.RFC3339))
+			}
+			// No delivery confirmation email for internal system SMS (balance check / keepalive).
+			if bridge != nil && entry.Source != "balance_check" && entry.Source != "keepalive" {
 				if cerr := bridge.SendDeliveryConfirmation(entry.ToNumber, entry.Body, true, ref, "", entry.SessionPrefix); cerr != nil {
 					logger.Printf("Delivery confirmation email failed: %v", cerr)
 				}

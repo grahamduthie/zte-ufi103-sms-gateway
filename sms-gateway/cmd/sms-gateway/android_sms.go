@@ -92,6 +92,12 @@ func pollAndroidSMS(db *database.DB, bridge *email.Bridge, logger *log.Logger) i
 		logger.Printf("Android SMS: imported from %s (android_id=%d)", address, androidID)
 		imported++
 
+		// Check for a GiffGaff balance response before normal forwarding.
+		if handleIncomingBalanceResponse(db, bridge, logger, msgID, address, body) {
+			logger.Printf("Android SMS: msg %d from %s handled as balance response", msgID, address)
+			continue
+		}
+
 		// Forward immediately using the Android message timestamp.
 		receivedAt := time.Unix(dateMs/1000, 0).UTC().Format(time.RFC3339)
 		msg := database.Message{

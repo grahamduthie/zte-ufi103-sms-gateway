@@ -595,3 +595,23 @@ On first boot from AP mode, `wpa_supplicant.conf` does not yet exist, so
 ---
 
 *See also: `STATUS.md` (current status), `GATEWAY.md` (architecture), `DEVICE.md` (hardware and RILD details)*
+
+
+---
+
+## Feature Notes (not bugs, but non-obvious discoveries)
+
+### GiffGaff Named Sender Encoding
+**Discovery**: When GiffGaff responds to "INFO" sent to 85075, the modem
+represents their alphanumeric sender ID "giffgaff" as a concatenation of the
+decimal ASCII codes for each character: `10310510210210397102102`
+(103=g, 105=i, 102=f, 102=f, 103=g, 97=a, 102=f, 102=f).
+
+This sender does NOT start with "+" so `isServiceSender()` correctly identifies
+it as a short code / named sender, enabling balance response detection.
+
+GiffGaff typically sends two SMS in response to "INFO": one with credit balance,
+one with a link to their app/website. Only the first triggers the admin email
+(which clears the pending flag); the second is forwarded as a normal received SMS.
+
+**Relevant code**: `cmd/sms-gateway/balance_checker.go` → `isServiceSender()`

@@ -235,6 +235,75 @@ func (b *Bridge) SendDeliveryConfirmation(toNumber, body string, success bool, r
 	return c.Quit()
 }
 
+// SendAdminEmail sends a plain-text administrative email to an arbitrary recipient
+// using the gateway's SMTP credentials. Used for keepalive and balance check notifications.
+func (b *Bridge) SendAdminEmail(to, subject, body string) error {
+	header := map[string]string{
+		"From":         fmt.Sprintf("%s <%s>", b.cfg.FromName, b.cfg.Username),
+		"To":           to,
+		"Subject":      subject,
+		"Date":         time.Now().Format(time.RFC1123Z),
+		"MIME-Version": "1.0",
+		"Content-Type": "text/plain; charset=UTF-8",
+	}
+	var msg strings.Builder
+	for k, v := range header {
+		msg.WriteString(k + ": " + v + "\r\n")
+	}
+	msg.WriteString("\r\n")
+	msg.WriteString(body)
+	msgStr := msg.String()
+
+	auth := smtp.PlainAuth("", b.cfg.Username, b.cfg.Password, b.cfg.SMTPHost)
+	addr := fmt.Sprintf("%s:%d", b.cfg.SMTPHost, b.cfg.SMTPPort)
+
+	var conn net.Conn
+	var err error
+	if b.cfg.SMTPPort == 465 {
+		conn, err = tls.Dial("tcp", addr, &tls.Config{ServerName: b.cfg.SMTPHost, InsecureSkipVerify: true})
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, 15*time.Second)
+	}
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+	defer conn.Close()
+
+	c, err := smtp.NewClient(conn, b.cfg.SMTPHost)
+	if err != nil {
+		return fmt.Errorf("smtp client: %w", err)
+	}
+	defer c.Close()
+
+	if b.cfg.SMTPPort != 465 {
+		if ok, _ := c.Extension("STARTTLS"); ok {
+			if err := c.StartTLS(&tls.Config{ServerName: b.cfg.SMTPHost, InsecureSkipVerify: true}); err != nil {
+				return fmt.Errorf("starttls: %w", err)
+			}
+		}
+	}
+	if err := c.Auth(auth); err != nil {
+		return fmt.Errorf("auth: %w", err)
+	}
+	if err := c.Mail(b.cfg.Username); err != nil {
+		return fmt.Errorf("mail from: %w", err)
+	}
+	if err := c.Rcpt(to); err != nil {
+		return fmt.Errorf("rcpt to: %w", err)
+	}
+	w, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("data: %w", err)
+	}
+	if _, err = io.WriteString(w, msgStr); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	if err = w.Close(); err != nil {
+		return fmt.Errorf("close: %w", err)
+	}
+	return c.Quit()
+}
+
 // PollReplies checks the IMAP inbox for new email replies and queues them as SMS.
 func (b *Bridge) PollReplies() error {
 	addr := fmt.Sprintf("%s:%d", b.cfg.IMAPHost, b.cfg.IMAPPort)

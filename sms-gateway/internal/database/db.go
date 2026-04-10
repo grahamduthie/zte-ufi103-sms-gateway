@@ -503,6 +503,49 @@ func (d *DB) SetAndroidLastSMSID(id int64) {
 	d.SetHealth("last_android_sms_id", strconv.FormatInt(id, 10))
 }
 
+// GetHealth returns a single value from daemon_health, or sql.ErrNoRows if the key is absent.
+func (d *DB) GetHealth(key string) (string, error) {
+	var val string
+	err := d.QueryRow(`SELECT value FROM daemon_health WHERE key = ?`, key).Scan(&val)
+	return val, err
+}
+
+// LastChargeableSMSAt returns the timestamp of the most recent outgoing SMS
+// that counts as a chargeable text (any source except 'balance_check').
+// It checks the daemon_health cache first; if absent, initialises from the
+// send_queue and persists the result. Returns zero time if there are no sent
+// chargeable messages.
+func (d *DB) LastChargeableSMSAt() (time.Time, error) {
+	// Check cache first.
+	val, err := d.GetHealth("last_chargeable_sms_at")
+	if err == nil && val != "" {
+		if t, perr := time.Parse(time.RFC3339, val); perr == nil {
+			return t, nil
+		}
+	}
+
+	// Initialise from send_queue.
+	var sentAt sql.NullString
+	err = d.QueryRow(
+		`SELECT sent_at FROM send_queue
+		 WHERE status = 'sent' AND source != 'balance_check'
+		 ORDER BY sent_at DESC LIMIT 1`,
+	).Scan(&sentAt)
+	if err == sql.ErrNoRows || !sentAt.Valid {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	t, perr := time.Parse(time.RFC3339, sentAt.String)
+	if perr != nil {
+		return time.Time{}, perr
+	}
+	d.SetHealth("last_chargeable_sms_at", t.Format(time.RFC3339))
+	return t, nil
+}
+
 // CheckIntegrity runs PRAGMA integrity_check on the database and returns
 // an error if the database is corrupted.
 func (d *DB) CheckIntegrity() error {

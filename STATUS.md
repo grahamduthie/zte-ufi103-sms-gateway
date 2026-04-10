@@ -1,6 +1,6 @@
 # ZTE UFI103 SMS Gateway — Status & Quick Reference
 
-*Last updated: 2026-04-10 14:00 BST*
+*Last updated: 2026-04-10 18:15 BST*
 *Device Serial: 19ce8266*
 
 ---
@@ -21,6 +21,8 @@
 | SIM auto-unlock | ✅ | Proactive check at start of every SMS poll; SIM PIN lock removed |
 | Shell injection fix | ✅ | `send_shell.go` deprecated + input validation on all SMS send paths |
 | Automated tests | ✅ | **130 tests across 5 packages — all passing** |
+| SIM keepalive | ✅ | Daily check; sends "Marlow FM Chargable Text" to +447734139947 if >5 months since last chargeable SMS; emails admin |
+| GiffGaff balance check | ✅ | Every Sunday ~10am UK; texts "INFO" to 85075; emails response to graham.duthie@marlowfm.co.uk; 10-min timeout |
 | Boot persistence | ✅ | `qrngp` wrapper in `/init.target.rc` — triggers on `sys.boot_completed=1` |
 | WiFi auto-setup on boot | ✅ | `start.sh` switches to client mode via `wifi-setup.sh` + dynamic DHCP |
 | Single-instance guard | ✅ | PID file in `start.sh` prevents duplicate gateway processes |

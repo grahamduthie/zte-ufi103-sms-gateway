@@ -1,6 +1,6 @@
 # ZTE UFI103 SMS Gateway — Status & Quick Reference
 
-*Last updated: 2026-04-10 12:30 BST*
+*Last updated: 2026-04-10 14:00 BST*
 *Device Serial: 19ce8266*
 
 ---
@@ -39,27 +39,50 @@
 
 | Issue | Status | Notes |
 |-------|--------|-------|
-| USB mode cycling on host PC | ⚠️ Known | ModemManager probes `cdc-wdm0` (DIAG interface), triggers firmware USB re-enumeration. Does **not** affect gateway operation. Stops when ModemManager gives up. |
-| **WiFi driver instability** | 🔴 **Active** | See below — this is the main ongoing issue |
+| USB mode cycling on host PC | ⚠️ Known | ModemManager probes `cdc-wdm0` (DIAG interface), triggers firmware USB re-enumeration. Causes periodic init service re-triggers — see WiFi section. |
+| WiFi driver instability | ✅ Mitigated | See below — root causes identified and fixed 2026-04-10 |
 
-## WiFi Driver Instability (Critical)
+## WiFi Driver Instability (Mitigated — 2026-04-10)
 
 **Symptom**: The `pronto_wlan.ko` WiFi driver on this Qualcomm MSM8916 device
 periodically crashes, causing `wlan0` to disappear entirely. When this happens,
 the web GUI becomes unreachable and IMAP/SMTP disconnect.
 
-**Root cause**: The Qualcomm WCNSS PRONTO driver has a known hardware/firmware
-limitation — repeated wpa_supplicant restarts (kill + start) eventually put the
-driver into an unrecoverable state. After 2-3 driver reload cycles in a single
-boot session, `wlan0` vanishes and cannot be brought back without a reboot.
+**Root cause (driver level)**: The Qualcomm WCNSS PRONTO driver has a known
+hardware/firmware limitation — repeated wpa_supplicant restarts (kill + start)
+eventually put the driver into an unrecoverable state. After ~3 soft-reconnect
+cycles in a single boot session, `wlan0` vanishes and only a reboot recovers it.
 
-**What we've done to mitigate:**
-1. **WiFi watchdog hardened** — checks every 2 minutes (not 45s), exponential
-   backoff (60s → 30min), stops trying after 5 consecutive failures, detects
-   missing `wlan0` device and backs off immediately.
-2. **No driver reload in watchdog** — only soft reconnects (wpa_supplicant
-   restart). Never does `rmmod`/`insmod` at runtime.
-3. **Boot recovery** — a clean `adb reboot` restores the driver to a fresh state.
+**Root cause (software — now fixed)**: Two bugs were triggering unnecessary
+wpa_supplicant restarts and driver reloads:
+
+1. **Old binary watchdog (unlimited retries)**: The binary deployed before
+   2026-04-10 had a 45-second check interval and *no upper limit* on reconnect
+   attempts. A brief WiFi blip (e.g. router restart) at 04:02 BST triggered
+   hundreds of wpa_supplicant kill+restart cycles, destroying the driver
+   permanently until the next reboot.
+
+2. **Android cgroup teardown + start.sh**: When ModemManager's USB probing
+   causes `sys.boot_completed` to cycle, Android init re-invokes the `sms-gw`
+   service. This kills the entire service cgroup — including `wpa_supplicant`.
+   The old `start.sh` would immediately run `wifi-setup.sh` (rmmod/insmod) if
+   wlan0 had no IP. Repeated driver reloads accumulate wear on the pronto driver.
+
+3. **Watchdog grace period bug**: The new binary's watchdog used a channel
+   drain (`select { case <-grace.C: ... default: continue }`) to track the
+   3-minute boot grace period. After the timer fired once and the channel was
+   consumed, all subsequent checks hit `default: continue` — silently disabling
+   the watchdog for the entire session (only one check ever happened).
+
+**Fixes applied (2026-04-10):**
+1. **WiFi watchdog** — grace period now tracked with a `graceExpired bool` so
+   the watchdog correctly checks every 2 minutes throughout the session. Hard
+   limit (5 failures), exponential backoff (60s→30min), and missing-wlan0
+   detection all remain in place.
+2. **start.sh soft reconnect** — when wlan0 exists but has no IP, start.sh now
+   tries a soft reconnect (wpa_supplicant + DHCP) before resorting to a full
+   driver reload (rmmod/insmod). Only does rmmod/insmod if wlan0 device is
+   completely absent or the soft reconnect fails (e.g. first boot from AP mode).
 
 **Workaround when WiFi drops:**
 ```bash
@@ -72,7 +95,6 @@ adb reboot
 **Long-term fix options** (not yet implemented):
 - Replace `pronto_wlan.ko` with a newer/patched version if available
 - Use external USB WiFi dongle instead of the onboard chip
-- Accept periodic reboots as operational procedure (reliable once every 2-3 days)
 
 ## What Doesn't Work ❌
 

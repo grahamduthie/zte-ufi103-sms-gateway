@@ -418,22 +418,19 @@ adb shell "setprop ctl.start sms-gw"
 
 ---
 
-## Bug 15: WiFi Driver Instability — pronto_wlan.ko Crashes Repeatedly (Active — 2026-04-10)
+## Bug 15: WiFi Driver Instability — pronto_wlan.ko Crashes (Mitigated — 2026-04-10)
 
 ### Symptom
 The web GUI becomes unreachable after a period of operation. The dongle is
 running (modem OK, SMS polling works, IMAP connected) but WiFi has dropped.
 `wlan0` has disappeared from the system entirely.
 
-### Root cause
+### Root cause (driver level)
 The Qualcomm WCNSS PRONTO WiFi driver (`pronto_wlan.ko`) on this MSM8916
 chipset has a hardware/firmware limitation: after 2-3 `wpa_supplicant` restart
 cycles (kill + start) within a single boot session, the driver enters an
 unrecoverable state. The `wlan0` network device disappears and cannot be
 brought back. Only a clean reboot restores the driver.
-
-This is **not** a software bug in the gateway — it's a known limitation of
-the pronto_wlan driver on this specific device.
 
 ### Trigger
 - WiFi watchdog detecting lost IP and restarting wpa_supplicant
@@ -449,9 +446,8 @@ the pronto_wlan driver on this specific device.
    - Hard limit: 5 consecutive failures → stop trying until reboot
    - Missing wlan0 detection: if device is gone, stop immediately
 
-2. **No driver reload at runtime**: The watchdog never does `rmmod`/`insmod`.
-   Only soft reconnects (wpa_supplicant restart), which still eventually
-   trigger the crash but much more slowly.
+2. **No driver reload in watchdog**: Never does `rmmod`/`insmod` at runtime.
+   Only soft reconnects (wpa_supplicant restart).
 
 3. **Clean shutdown button**: "Shut Down Dongle" in web UI prevents stale
    PID file issues that complicate reboots.
@@ -463,11 +459,6 @@ adb reboot
 # Wait ~2 minutes for boot + WiFi + gateway to come back.
 ```
 
-### Long-term fix options (not yet implemented)
-- Replace `pronto_wlan.ko` with a newer/patched version if available
-- Use an external USB WiFi dongle instead of the onboard chip
-- Accept periodic reboots as operational procedure (reliable once every 2-3 days)
-
 ### Confirmed
 - Driver crashes after ~2-3 wpa_supplicant restarts per boot session
 - Reboot always recovers the driver to a fresh, stable state
@@ -476,4 +467,131 @@ adb reboot
 
 ---
 
-*See also: `STATUS.md` (current status), `GATEWAY.md` (architecture), `REFACTOR_PLAN.md` (fix plan), `DEVICE.md` (hardware and RILD details)*
+## Bug 16: Old Watchdog Unlimited Retries Destroy Driver (Fixed — 2026-04-10)
+
+### Symptom
+After a brief WiFi disruption overnight, WiFi never recovered. `wlan0`
+disappeared entirely and the web GUI was unreachable for ~7 hours until a
+manual reboot.
+
+### Root cause
+The binary deployed before 2026-04-10 had `wifiCheckInterval = 45s` and **no
+hard limit** on reconnect attempts. When WiFi dropped at ~04:02 BST, the
+watchdog hammered wpa_supplicant kills-and-restarts every ~20–45 seconds with
+no upper bound. Log evidence: over 50 reconnect attempts between 04:02 and
+04:30 BST. This far exceeded the pronto driver's ~3-restart budget, causing
+wlan0 to vanish permanently until reboot.
+
+The root WiFi disruption was likely a brief router blip (common overnight
+maintenance). With no retry limit, the watchdog turned a 30-second router
+restart into a multi-hour outage.
+
+### Fix
+The hardened watchdog (5-failure hard limit, exponential backoff) was already
+written (commits 2dcce5d + 5ab478b) but had not yet been deployed. The new
+binary was deployed at 09:52 BST the same morning. The unlimited-retry binary
+is no longer in use.
+
+### Status
+✅ Fixed — new binary deployed 2026-04-10 09:52 BST.
+
+---
+
+## Bug 17: WiFi Watchdog Grace Period Bug — Watchdog Checks Only Once (Fixed — 2026-04-10)
+
+### Symptom
+After the hardened watchdog was deployed, WiFi would still drop and not be
+detected. The watchdog logged one check after boot then went silent.
+
+### Root cause
+The grace period was implemented as:
+```go
+select {
+case <-grace.C:
+default:
+    continue
+}
+```
+A `time.Timer` channel sends exactly one value when it fires. After the first
+check past the grace period consumed that value, all subsequent iterations hit
+`default: continue` — skipping the check permanently. The watchdog only ever
+performed **one connectivity check** per gateway session.
+
+### Fix
+Replaced the channel drain with a `graceExpired bool`:
+```go
+if !graceExpired {
+    select {
+    case <-grace.C:
+        graceExpired = true
+    default:
+        continue
+    }
+}
+```
+The watchdog now correctly checks every 2 minutes throughout the session.
+
+### Files changed
+| File | Change |
+|------|--------|
+| `cmd/sms-gateway/wifi_watchdog.go` | Added `graceExpired bool`; replaced channel drain with bool check |
+
+### Status
+✅ Fixed — 2026-04-10.
+
+---
+
+## Bug 18: start.sh Triggers Unnecessary Driver Reloads on Service Restart (Fixed — 2026-04-10)
+
+### Symptom
+WiFi would drop repeatedly within the same boot session even without the
+watchdog doing anything. Each `adb reboot` gave stability for 30–60 minutes
+before WiFi dropped again.
+
+### Root cause
+ModemManager's USB probing causes `sys.boot_completed` to cycle on the device,
+which re-fires the Android init `on property:` trigger for the `sms-gw`
+service. Init kills the entire service **cgroup** — including `wpa_supplicant`,
+which runs as a background child started by `wifi-setup.sh`. The service is
+then restarted.
+
+The old `start.sh` WiFi check was binary: wlan0 has IP → skip; otherwise → run
+`wifi-setup.sh`. Because init killed `wpa_supplicant` via cgroup teardown,
+wlan0 had no IP when the new `start.sh` checked. This triggered a full
+`rmmod`/`insmod` driver reload. Each reload adds wear; the pattern was:
+
+1. Init re-triggers service → cgroup kills wpa_supplicant
+2. New start.sh: wlan0 no IP → `wifi-setup.sh` (rmmod/insmod)
+3. Repeat every 3–5 minutes while ModemManager is active
+4. After 3–4 reloads within a session, driver becomes unstable
+
+Log evidence from 2026-04-10: wifi-setup.sh was called 4 times within a
+~90-minute window after a clean reboot, with no corresponding `wlan0` device
+disappearance between calls.
+
+### Fix
+`start.sh` now uses a three-way check before deciding what to do:
+
+1. **wlan0 has IP** → skip everything (most common case after gateway restart
+   via web UI or crash-restart loop).
+2. **wlan0 device exists but no IP** → soft reconnect: restart `wpa_supplicant`
+   + run `udhcpc`. No `rmmod`/`insmod`. If the soft reconnect succeeds, done.
+3. **wlan0 device missing** (or soft reconnect failed) → full `wifi-setup.sh`
+   (rmmod/insmod). This handles first boot from AP mode and genuine driver
+   crashes.
+
+On first boot from AP mode, `wpa_supplicant.conf` does not yet exist, so
+`wpa_supplicant` fails → soft reconnect fails → falls through to full
+`wifi-setup.sh`. Correct behaviour is preserved.
+
+### Files changed
+| File | Change |
+|------|--------|
+| `scripts/start.sh` | WiFi section replaced with three-way check + soft reconnect |
+
+### Status
+✅ Fixed — 2026-04-10.
+
+---
+
+*See also: `STATUS.md` (current status), `GATEWAY.md` (architecture), `DEVICE.md` (hardware and RILD details)*

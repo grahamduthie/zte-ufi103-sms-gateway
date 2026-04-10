@@ -178,6 +178,13 @@ func main() {
 	db.SetHealth("started_at", startedAt.UTC().Format(time.RFC3339))
 	db.SetHealth("circuit_breaker", "closed")
 
+	// Seed last_chargeable_sms_at into daemon_health from send_queue now, before
+	// housekeeping has a chance to prune old records. Without this, a first-deploy
+	// scenario where the last sent SMS is >90 days old could lose the timestamp.
+	if t, err := db.LastChargeableSMSAt(); err == nil && !t.IsZero() {
+		logger.Printf("SIM keepalive: last chargeable SMS was %s", t.Format("2006-01-02"))
+	}
+
 	logger.Println("SMS gateway started — polling for messages")
 
 	// Initial SMS poll before starting tickers.

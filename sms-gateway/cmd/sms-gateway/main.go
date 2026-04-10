@@ -457,11 +457,25 @@ func processSMS(at *atcmd.Session, db *database.DB, bridge *email.Bridge, cfg *c
 		return true // AT worked; DB error is not an AT failure
 	}
 	for _, msg := range unforwarded {
-		if err := bridge.ForwardMessage(msg); err != nil {
-			logger.Printf("Forward error for message %d: %v", msg.ID, err)
-			db.IncrementForwardAttempts(msg.ID)
+		if isServiceSender(msg.Sender) {
+			// Service SMS (e.g. giffgaff) — admin-only, not the radio station inbox.
+			subj := fmt.Sprintf("Service SMS from %s", msg.Sender)
+			if bridge != nil {
+				if err := bridge.SendAdminEmail(adminEmail, subj, msg.Body); err != nil {
+					logger.Printf("Admin forward error for service message %d: %v", msg.ID, err)
+					db.IncrementForwardAttempts(msg.ID)
+					continue
+				}
+			}
+			logger.Printf("Forwarded service message %d from %s to admin", msg.ID, msg.Sender)
+			db.MarkForwarded(msg.ID, "service-sms")
 		} else {
-			logger.Printf("Forwarded message %d from %s to email", msg.ID, msg.Sender)
+			if err := bridge.ForwardMessage(msg); err != nil {
+				logger.Printf("Forward error for message %d: %v", msg.ID, err)
+				db.IncrementForwardAttempts(msg.ID)
+			} else {
+				logger.Printf("Forwarded message %d from %s to email", msg.ID, msg.Sender)
+			}
 		}
 	}
 	return true
@@ -483,9 +497,14 @@ func processSendQueue(at *atcmd.Session, db *database.DB, bridge *email.Bridge, 
 				reason := fmt.Sprintf("max attempts (%d): %v", maxSendAttempts, err)
 				db.MarkSendQueueFailed(entry.ID, reason)
 				logger.Printf("Giving up on SMS to %s after %d attempts", entry.ToNumber, maxSendAttempts)
-				if bridge != nil {
-					if cerr := bridge.SendDeliveryConfirmation(entry.ToNumber, entry.Body, false, 0, reason, entry.SessionPrefix); cerr != nil {
-						logger.Printf("Delivery confirmation email failed: %v", cerr)
+				if bridge != nil && entry.Source != "keepalive" {
+					if isGiffGafDest(entry.ToNumber) {
+						body := fmt.Sprintf("Failed to send SMS to %s after %d attempts.\n\nMessage: %s\nReason: %s\n", entry.ToNumber, maxSendAttempts, entry.Body, reason)
+						bridge.SendAdminEmail(adminEmail, "SMS send failed to "+entry.ToNumber, body)
+					} else {
+						if cerr := bridge.SendDeliveryConfirmation(entry.ToNumber, entry.Body, false, 0, reason, entry.SessionPrefix); cerr != nil {
+							logger.Printf("Delivery confirmation email failed: %v", cerr)
+						}
 					}
 				}
 			} else {
@@ -499,10 +518,17 @@ func processSendQueue(at *atcmd.Session, db *database.DB, bridge *email.Bridge, 
 			if entry.Source != "balance_check" {
 				db.SetHealth("last_chargeable_sms_at", time.Now().UTC().Format(time.RFC3339))
 			}
-			// No delivery confirmation email for internal system SMS (balance check / keepalive).
-			if bridge != nil && entry.Source != "balance_check" && entry.Source != "keepalive" {
-				if cerr := bridge.SendDeliveryConfirmation(entry.ToNumber, entry.Body, true, ref, "", entry.SessionPrefix); cerr != nil {
-					logger.Printf("Delivery confirmation email failed: %v", cerr)
+			if bridge != nil && entry.Source != "keepalive" {
+				if isGiffGafDest(entry.ToNumber) {
+					// Texts to giffgaff — admin-only confirmation, not the radio station inbox.
+					body := fmt.Sprintf("SMS sent to %s (ref=%d).\n\nMessage: %s\n", entry.ToNumber, ref, entry.Body)
+					if cerr := bridge.SendAdminEmail(adminEmail, "SMS sent to "+entry.ToNumber, body); cerr != nil {
+						logger.Printf("Admin confirmation email failed: %v", cerr)
+					}
+				} else {
+					if cerr := bridge.SendDeliveryConfirmation(entry.ToNumber, entry.Body, true, ref, "", entry.SessionPrefix); cerr != nil {
+						logger.Printf("Delivery confirmation email failed: %v", cerr)
+					}
 				}
 			}
 		}

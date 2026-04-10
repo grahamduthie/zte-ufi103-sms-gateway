@@ -98,6 +98,19 @@ func pollAndroidSMS(db *database.DB, bridge *email.Bridge, logger *log.Logger) i
 			continue
 		}
 
+		// Service SMS (e.g. giffgaff) — admin-only, not the radio station inbox.
+		if isServiceSender(address) {
+			subj := fmt.Sprintf("Service SMS from %s", address)
+			if err := bridge.SendAdminEmail(adminEmail, subj, body); err != nil {
+				logger.Printf("Android SMS: admin forward error (msg %d): %v", msgID, err)
+				db.IncrementForwardAttempts(msgID)
+			} else {
+				logger.Printf("Android SMS: forwarded service msg %d from %s to admin", msgID, address)
+				db.MarkForwarded(msgID, "service-sms")
+			}
+			continue
+		}
+
 		// Forward immediately using the Android message timestamp.
 		receivedAt := time.Unix(dateMs/1000, 0).UTC().Format(time.RFC3339)
 		msg := database.Message{

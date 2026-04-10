@@ -130,3 +130,9 @@ func handleIncomingBalanceResponse(db *database.DB, bridge *email.Bridge, logger
 func isServiceSender(sender string) bool {
 	return !strings.HasPrefix(sender, "+")
 }
+
+// isGiffGafDest returns true if the destination number is the GiffGaff
+// balance service (85075) or similar short-code destination.
+func isGiffGafDest(toNumber string) bool {
+	return toNumber == giffgafNumber
+}

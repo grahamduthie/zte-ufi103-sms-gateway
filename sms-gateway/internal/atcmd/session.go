@@ -999,7 +999,7 @@ func parseCMGL(output, storage string) ([]SMS, error) {
 		sms := SMS{
 			Index:     idx,
 			Status:    m[2],
-			Sender:    m[3],
+			Sender:    decodeAlphaNumericSender(m[3]),
 			Timestamp: m[4],
 			Storage:   storage,
 		}
@@ -1024,11 +1024,22 @@ func parseCMGL(output, storage string) ([]SMS, error) {
 	return msgs, nil
 }
 
-// decodeIfNeeded detects hex-encoded GSM 7-bit text and decodes it.
-// After decoding, the output is validated: if any byte is a non-printable
-// control character (below 0x20, excluding \n \r \t) the original text is
-// returned unchanged. This prevents false-positive decoding of legitimate
-// hex strings like "Balance: 00AABB".
+// decodeIfNeeded detects hex-encoded SMS bodies and decodes them.
+//
+// When this modem (Qualcomm WCNSS, AT+CMGF=1) receives a message whose DCS
+// is not GSM 7-bit (e.g. 8-bit Latin-1 or UCS-2), it outputs the body as
+// raw hex rather than text. Three encodings are tried in order:
+//
+//  1. Raw Latin-1 bytes — each hex pair is one Latin-1 character. This is
+//     what network service senders (e.g. GiffGaff) typically use. Accepted
+//     if all bytes are printable (0x20–0x7E or 0xA0–0xFF).
+//  2. UCS-2 BE (UTF-16 big-endian) — each pair of hex pairs is one Unicode
+//     code point. Used when Latin-1 produces too many null or control bytes
+//     (which appears as 00-prefixed pairs in the hex).
+//  3. GSM 7-bit packed — the original fallback for modem-packed text.
+//
+// If none of the decoded forms pass the printability check the original hex
+// is returned unchanged (e.g. a user literally sending a hex string).
 func decodeIfNeeded(text string) string {
 	if len(text) < 10 || len(text)%2 != 0 {
 		return text
@@ -1041,20 +1052,134 @@ func decodeIfNeeded(text string) string {
 	}
 
 	data := make([]byte, len(text)/2)
-	for i := 0; i < len(data); i++ {
+	for i := range data {
 		_, err := fmt.Sscanf(text[i*2:i*2+2], "%02x", &data[i])
 		if err != nil {
 			return text
 		}
 	}
 
-	decoded := gsm7Decode(data)
+	// Try 1: raw Latin-1 bytes.
+	if s := decodeLatin1(data); s != "" {
+		return s
+	}
 
-	// Validate: decoded output must be printable ASCII to be accepted.
-	for _, r := range decoded {
-		if r < 32 && r != '\n' && r != '\r' && r != '\t' {
-			return text // non-printable — keep original hex text
+	// Try 2: UCS-2 BE (UTF-16 big-endian).
+	if len(data)%2 == 0 {
+		if s := decodeUCS2BE(data); s != "" {
+			return s
 		}
+	}
+
+	// Try 3: GSM 7-bit packed (original fallback).
+	decoded := gsm7Decode(data)
+	if isPrintableSMS(decoded) {
+		return decoded
+	}
+
+	return text
+}
+
+// decodeLatin1 interprets each byte as a Latin-1 character and returns the
+// resulting string, or "" if any byte is a control character (i.e. the data
+// is not actually Latin-1 text). Printable range: 0x20–0x7E and 0xA0–0xFF.
+// Tab, LF, and CR are also accepted.
+func decodeLatin1(data []byte) string {
+	var sb strings.Builder
+	for _, b := range data {
+		switch {
+		case b == '\t' || b == '\n' || b == '\r':
+			sb.WriteByte(b)
+		case b >= 0x20 && b <= 0x7E:
+			sb.WriteByte(b)
+		case b >= 0xA0: // Latin-1 supplement (non-breaking space through ÿ)
+			sb.WriteRune(rune(b))
+		default:
+			return "" // control character — not Latin-1 text
+		}
+	}
+	return sb.String()
+}
+
+// decodeUCS2BE interprets the bytes as UTF-16 big-endian (UCS-2) and returns
+// the decoded string, or "" if the result contains control characters.
+func decodeUCS2BE(data []byte) string {
+	runes := make([]rune, len(data)/2)
+	for i := range runes {
+		runes[i] = rune(uint16(data[i*2])<<8 | uint16(data[i*2+1]))
+	}
+	s := string(runes)
+	if isPrintableSMS(s) {
+		return s
+	}
+	return ""
+}
+
+// isPrintableSMS returns true if every rune in s is printable or a common
+// whitespace character (tab, LF, CR). Used to validate decoded SMS bodies.
+func isPrintableSMS(s string) bool {
+	for _, r := range s {
+		if r == '\t' || r == '\n' || r == '\r' {
+			continue
+		}
+		if r < 0x20 || r == 0x7F {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
+// decodeAlphaNumericSender decodes the sender field for alphanumeric
+// originator addresses. This modem (Qualcomm WCNSS, AT+CMGF=1) encodes
+// alphanumeric sender IDs as a concatenation of the decimal ASCII codes for
+// each character — e.g. "giffgaff" becomes "10310510210210397102102"
+// (103=g, 105=i, 102=f, 102=f, 103=g, 97=a, 102=f, 102=f).
+//
+// The decoder is greedy: for each position it tries a 3-digit code (range
+// 100–126) first, then a 2-digit code (range 32–99). If neither produces a
+// printable ASCII character the original string is returned unchanged, so
+// real numeric phone numbers (which hit a sub-32 code early) are never
+// mangled.
+func decodeAlphaNumericSender(s string) string {
+	// Only attempt decode for all-digit strings long enough to encode ≥2 chars.
+	if len(s) < 4 {
+		return s
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return s // contains non-digits (e.g. already has a proper name or '+')
+		}
+	}
+
+	var result strings.Builder
+	i := 0
+	for i < len(s) {
+		var code int
+		var width int
+		// Try 3-digit code first (printable ASCII 100–126).
+		if i+3 <= len(s) {
+			v, _ := strconv.Atoi(s[i : i+3])
+			if v >= 100 && v <= 126 {
+				code, width = v, 3
+			}
+		}
+		// Fall back to 2-digit code (printable ASCII 32–99).
+		if width == 0 && i+2 <= len(s) {
+			v, _ := strconv.Atoi(s[i : i+2])
+			if v >= 32 && v <= 99 {
+				code, width = v, 2
+			}
+		}
+		if width == 0 {
+			return s // can't decode this position — not the decimal-ASCII format
+		}
+		result.WriteRune(rune(code))
+		i += width
+	}
+
+	decoded := result.String()
+	if len(decoded) < 2 {
+		return s // implausibly short result
 	}
 	return decoded
 }

@@ -202,6 +202,122 @@ func TestDecodeIfNeeded_ValidGSM(t *testing.T) {
 	}
 }
 
+// TestDecodeIfNeeded_Latin1Hex verifies that hex-encoded Latin-1 bytes (as
+// sent by GiffGaff and other network service senders) are decoded correctly.
+// The modem outputs the raw message bytes as hex when the DCS is not GSM 7-bit.
+func TestDecodeIfNeeded_Latin1Hex(t *testing.T) {
+	// "Hi there" encoded as Latin-1 hex (each char = one byte)
+	input := "4869207468657265"
+	got := decodeIfNeeded(input)
+	want := "Hi there"
+	if got != want {
+		t.Errorf("Latin-1 hex: got %q, want %q", got, want)
+	}
+}
+
+func TestDecodeIfNeeded_GiffGafMessage(t *testing.T) {
+	// Actual GiffGaff INFO response fragment encoded as Latin-1 hex.
+	input := "48692074686572652E20596F75206861766520392E373720474250"
+	got := decodeIfNeeded(input)
+	want := "Hi there. You have 9.77 GBP"
+	if got != want {
+		t.Errorf("GiffGaff Latin-1: got %q, want %q", got, want)
+	}
+}
+
+func TestDecodeIfNeeded_UCS2(t *testing.T) {
+	// "Hello!" encoded as UCS-2 BE: H=0048 e=0065 l=006C l=006C o=006F !=0021
+	input := "00480065006C006C006F0021"
+	got := decodeIfNeeded(input)
+	want := "Hello!"
+	if got != want {
+		t.Errorf("UCS-2 BE: got %q, want %q", got, want)
+	}
+}
+
+func TestDecodeIfNeeded_NullBytes(t *testing.T) {
+	// 10 null bytes — should be rejected (control chars), not decoded.
+	input := "00000000000000000000"
+	got := decodeIfNeeded(input)
+	if got != input {
+		t.Errorf("null bytes should be rejected, got: %q", got)
+	}
+}
+
+// ── decodeAlphaNumericSender tests ───────────────────────────────────────────
+
+func TestDecodeAlphaNumericSender_GiffGaff(t *testing.T) {
+	// "giffgaff" = 103,105,102,102,103,97,102,102 concatenated
+	input := "10310510210210397102102"
+	got := decodeAlphaNumericSender(input)
+	want := "giffgaff"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestDecodeAlphaNumericSender_AllCaps(t *testing.T) {
+	// "INFO" = 73,78,70,79
+	input := "73787079"
+	got := decodeAlphaNumericSender(input)
+	want := "INFO"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestDecodeAlphaNumericSender_PhoneNumber(t *testing.T) {
+	// A bare numeric string that hits a sub-32 code — should be unchanged.
+	// "447700900001": first pair "44" = 44 (,) valid, then "77" (M) valid,
+	// then "00" = 0 < 32 → fails → return original.
+	input := "447700900001"
+	got := decodeAlphaNumericSender(input)
+	if got != input {
+		t.Errorf("phone number should be unchanged, got %q", got)
+	}
+}
+
+func TestDecodeAlphaNumericSender_PlusPrefix(t *testing.T) {
+	// Real E.164 numbers come with a + — must be unchanged.
+	input := "+447700900001"
+	got := decodeAlphaNumericSender(input)
+	if got != input {
+		t.Errorf("E.164 number should be unchanged, got %q", got)
+	}
+}
+
+func TestDecodeAlphaNumericSender_Short(t *testing.T) {
+	// Too short to be the decimal-ASCII format — return unchanged.
+	input := "85075"
+	got := decodeAlphaNumericSender(input)
+	// "85075": 85=U, 07→07<32 fails → returns original
+	if got != input {
+		t.Errorf("short code should be unchanged, got %q", got)
+	}
+}
+
+// TestParseCMGL_AlphaNumericSender verifies that alphanumeric sender IDs
+// encoded as decimal ASCII codes are decoded in parseCMGL output.
+func TestParseCMGL_AlphaNumericSender(t *testing.T) {
+	input := `+CMGL: 1,"REC UNREAD","10310510210210397102102",,"26/04/04,12:00:00+04"
+48692074686572652E20596F75206861766520392E373720474250
+OK
+`
+	msgs, err := parseCMGL(input, "SM")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("want 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Sender != "giffgaff" {
+		t.Errorf("sender: got %q, want %q", msgs[0].Sender, "giffgaff")
+	}
+	if msgs[0].Text != "Hi there. You have 9.77 GBP" {
+		t.Errorf("text: got %q, want %q", msgs[0].Text, "Hi there. You have 9.77 GBP")
+	}
+}
+
 // ── operator regex test ──────────────────────────────────────────────────────
 
 func TestCOPSRegex(t *testing.T) {

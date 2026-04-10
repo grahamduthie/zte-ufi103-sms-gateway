@@ -357,6 +357,10 @@ sms-gateway/
    that window would be missed permanently (see `SMS_MODEM_ARCHITECTURE.md`)
 5. **mmssms.db always empty** — Qualcomm's telephony replacement doesn't write
    to the standard Android database; `pollAndroidSMS()` is dead code
+6. **WiFi driver instability** — `pronto_wlan.ko` crashes after ~3 wpa_supplicant
+   restarts per boot session. `wlan0` disappears and only a reboot recovers it.
+   The watchdog has been hardened (exponential backoff, failure limit, missing
+   device detection) to avoid making it worse. See Bug 15 in `BUGS.md`.
 
 ## Testing
 

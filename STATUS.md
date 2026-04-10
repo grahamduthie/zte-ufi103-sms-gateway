@@ -1,6 +1,6 @@
 # ZTE UFI103 SMS Gateway — Status & Quick Reference
 
-*Last updated: 2026-04-09 21:30 BST*
+*Last updated: 2026-04-10 12:30 BST*
 *Device Serial: 19ce8266*
 
 ---
@@ -14,8 +14,8 @@
 | SMS → Email | ✅ | **HTML emails** with Marlow FM logo, From/Received. Subject: `Text from +44... [DDMMYY-NNN]` |
 | Email → SMS | ✅ | IMAP IDLE picks up replies; **Bug 13 fixed** — PDU mode + `promptCh` beats RILD injection |
 | SMS send | ✅ | Sequential write approach (no intermediate reads) |
-| Web UI | ✅ | **Port 80** with password gate (`mfm`) — Dashboard, Received, Sent, Conversations, Compose, Settings |
-| WiFi client | ✅ | Multi-network: YOUR_WIFI_SSID_1 (home), YOUR_WIFI_SSID_2, YOUR_WIFI_SSID_3 (fallback locations) |
+| Web UI | ✅ | **Port 80** with password gate — Dashboard, Received, Sent, Conversations, Compose, Settings |
+| WiFi client | ⚠️ | Multi-network configured, but see "WiFi stability" below |
 | Quoted-printable decode | ✅ | Smart quotes → regular apostrophes (multi-byte UTF-8 fixed) |
 | Quote stripping | ✅ | Strips "On ... wrote:" blocks from email replies |
 | SIM auto-unlock | ✅ | Proactive check at start of every SMS poll; SIM PIN lock removed |
@@ -25,22 +25,54 @@
 | WiFi auto-setup on boot | ✅ | `start.sh` switches to client mode via `wifi-setup.sh` + dynamic DHCP |
 | Single-instance guard | ✅ | PID file in `start.sh` prevents duplicate gateway processes |
 | Log housekeeping | ✅ | Hourly rotation at 10 MB, WAL checkpoint, 90-day record pruning |
-| WiFi watchdog | ✅ | Soft-reconnect (wpa_supplicant restart) if wlan0 loses IP — no rmmod |
 | Conversation pagination | ✅ | 30 per page with indexes on `(sender, received_at)` and `(to_number, created_at)` |
 | Dashboard | ✅ | Monthly counts, last sent/received (UK time), gateway status, uptime |
 | Settings controls | ✅ | Save config, Restart Gateway, Reboot Dongle, Shut Down Dongle |
-| Auth gate | ✅ | Password `mfm` required for all routes except `/login`, `/logout`, `/static/*` |
+| Auth gate | ✅ | Password set in `config.json` (`web.admin_password`) — not hardcoded |
 | Logo embedding | ✅ | Logo loaded at startup, embedded as CID attachment in HTML emails |
 | Date-based session IDs | ✅ | Format `DDMMYY-NNN` (e.g. `060426-001`), stored in `daemon_health` |
 | Email threading | ✅ | Delivery confirmations use matching `Re: Text from +44... [DDMMYY-NNN]` subject |
 | Restart page | ✅ | `/restarting` shows spinner, auto-redirects when gateway is back |
+| GitHub security | ✅ | No passwords, phone numbers, or personal emails in repo or history |
 
-## Active Investigation 🔍
+## Active Investigation ⚠️
 
 | Issue | Status | Notes |
 |-------|--------|-------|
 | USB mode cycling on host PC | ⚠️ Known | ModemManager probes `cdc-wdm0` (DIAG interface), triggers firmware USB re-enumeration. Does **not** affect gateway operation. Stops when ModemManager gives up. |
-| Driver reload limit | ⚠️ Known | pronto_wlan.ko cannot be rmmod/insmod'd more than once per boot session. After that, wlan0 disappears entirely. Only a clean reboot recovers. |
+| **WiFi driver instability** | 🔴 **Active** | See below — this is the main ongoing issue |
+
+## WiFi Driver Instability (Critical)
+
+**Symptom**: The `pronto_wlan.ko` WiFi driver on this Qualcomm MSM8916 device
+periodically crashes, causing `wlan0` to disappear entirely. When this happens,
+the web GUI becomes unreachable and IMAP/SMTP disconnect.
+
+**Root cause**: The Qualcomm WCNSS PRONTO driver has a known hardware/firmware
+limitation — repeated wpa_supplicant restarts (kill + start) eventually put the
+driver into an unrecoverable state. After 2-3 driver reload cycles in a single
+boot session, `wlan0` vanishes and cannot be brought back without a reboot.
+
+**What we've done to mitigate:**
+1. **WiFi watchdog hardened** — checks every 2 minutes (not 45s), exponential
+   backoff (60s → 30min), stops trying after 5 consecutive failures, detects
+   missing `wlan0` device and backs off immediately.
+2. **No driver reload in watchdog** — only soft reconnects (wpa_supplicant
+   restart). Never does `rmmod`/`insmod` at runtime.
+3. **Boot recovery** — a clean `adb reboot` restores the driver to a fresh state.
+
+**Workaround when WiFi drops:**
+```bash
+# If the web UI is unreachable, reboot the dongle:
+adb reboot
+# Wait ~2 minutes for boot + WiFi setup + gateway start.
+# The driver will be fresh and stable again.
+```
+
+**Long-term fix options** (not yet implemented):
+- Replace `pronto_wlan.ko` with a newer/patched version if available
+- Use external USB WiFi dongle instead of the onboard chip
+- Accept periodic reboots as operational procedure (reliable once every 2-3 days)
 
 ## What Doesn't Work ❌
 
@@ -68,13 +100,13 @@
 # Check device is connected
 lsusb | grep 05c6          # → 05c6:90b4 Qualcomm Android
 
-# Web UI is on port 80 with password gate (password: "mfm")
+# Web UI is on port 80 with password gate
 # Via WiFi: http://172.16.10.226/
 # Via USB RNDIS: sudo ip addr add 192.168.100.2/24 dev enx02030f556538
 #               http://192.168.100.1/
 
 # Check status (needs auth cookie):
-curl -s -c /tmp/gw.txt http://172.16.10.226/login -X POST -d "password=mfm"
+curl -s -c /tmp/gw.txt http://172.16.10.226/login -X POST -d "password=<your_password>"
 curl -s -b /tmp/gw.txt http://172.16.10.226/status | python3 -m json.tool
 
 # View live log:
@@ -125,7 +157,7 @@ adb shell "setprop ctl.start sms-gw"
 /data/sms-gateway/
 ├── sms-gateway          # Go binary (~16MB, ARM static)
 ├── sms-gateway.new      # Staging area for binary updates
-├── config.json          # Credentials and settings
+├── config.json          # Credentials and settings (NOT in git — see .gitignore)
 ├── sms.db               # SQLite database (WAL mode)
 ├── sms-gateway.log      # Runtime log (rotated at 10MB by housekeeping goroutine)
 ├── sms-gateway.log.1    # Previous log file (one generation kept)
@@ -133,7 +165,7 @@ adb shell "setprop ctl.start sms-gw"
 └── scripts/             # WiFi setup scripts
 
 /data/misc/wifi/
-├── wpa_supplicant.conf  # WiFi client config (multi-network: YOUR_WIFI_SSID_1, YOUR_WIFI_SSID_2, YOUR_WIFI_SSID_3)
+├── wpa_supplicant.conf  # WiFi client config (multi-network)
 └── sockets/             # wpa_supplicant socket directory
 ```
 
@@ -144,14 +176,14 @@ adb shell "setprop ctl.start sms-gw"
 ├── STATUS.md                  # ← You are here
 ├── DEVICE.md                  # Hardware specs, root, SIM, AT commands, RILD behaviour
 ├── GATEWAY.md                 # SMS gateway architecture, config, goroutines, data flow
-├── BUGS.md                    # All bugs found and fixed
+├── BUGS.md                    # All bugs found and fixed (including WiFi driver issue)
 ├── SMS_MODEM_ARCHITECTURE.md  # CNMI/QMI SMS routing research and future fix options
 ├── REFACTOR_PLAN.md           # Completed refactoring plan (all items done)
 ├── WIFI_AP_PLAN.md            # Planned WiFi AP fallback feature
-├── sms-gateway/               # Go source code
+├── sms-gateway/               # Go source code (no credentials in git)
 └── backup/                    # Partition backups (sbl1, aboot, boot, etc.)
 ```
 
 ---
 
-*See also: `DEVICE.md` (hardware specs, root, SIM, AT commands), `GATEWAY.md` (architecture, config, data flow, testing), `BUGS.md` (all bugs and fixes), `SMS_MODEM_ARCHITECTURE.md` (CNMI/QMI SMS routing research and future fix options), `REFACTOR_PLAN.md` (completed refactoring items), `WIFI_AP_PLAN.md` (planned WiFi AP fallback with captive portal)*
+*See also: `DEVICE.md` (hardware specs, root, SIM, AT commands), `GATEWAY.md` (architecture, config, data flow, testing), `BUGS.md` (all bugs and fixes, including WiFi driver instability), `SMS_MODEM_ARCHITECTURE.md` (CNMI/QMI SMS routing research and future fix options), `REFACTOR_PLAN.md` (completed refactoring items), `WIFI_AP_PLAN.md` (planned WiFi AP fallback with captive portal)*

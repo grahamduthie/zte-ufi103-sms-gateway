@@ -482,3 +482,18 @@ changes. Check `mbu.Mailbox.Messages` to know if there are new messages.
 | 42 | /restarting page | ✅ Spinner page polls /status, auto-redirects when gateway is back |
 | 43 | Boot persistence mechanism clarified | ✅ `qrngp` wrapper (not named init service) — see Bug 14 in BUGS.md |
 | 44 | Settings save auto-restart reverted | ✅ Save just persists config; use Restart Gateway in Danger Zone |
+
+## Additional Items Completed (2026-04-10)
+
+| # | Task | Status |
+|---|------|--------|
+| 45 | Remove hardcoded password from source | ✅ `gatewayPassword = "mfm"` removed; reads from `config.json` |
+| 46 | Remove sensitive data from GitHub | ✅ All passwords, emails, phone numbers scrubbed from code and history |
+| 47 | Git history rewrite | ✅ `git-filter-repo` used to remove credentials from all 17 commits |
+| 48 | README.md created | ✅ GitHub project entry point with docs index |
+| 49 | Hardened WiFi watchdog | ✅ Boot grace, exponential backoff, hard failure limit, missing device detection |
+| 50 | Bug 15: WiFi driver instability documented | ✅ Active issue — pronto_wlan.ko crashes after ~3 wpa_supplicant restarts |
+
+---
+
+*Last updated: 2026-04-10*

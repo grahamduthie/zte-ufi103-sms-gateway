@@ -415,3 +415,65 @@ adb shell "setprop ctl.start sms-gw"
 ---
 
 *See also: `STATUS.md` (current status), `GATEWAY.md` (architecture), `DEVICE.md` (hardware and RILD details)*
+
+---
+
+## Bug 15: WiFi Driver Instability — pronto_wlan.ko Crashes Repeatedly (Active — 2026-04-10)
+
+### Symptom
+The web GUI becomes unreachable after a period of operation. The dongle is
+running (modem OK, SMS polling works, IMAP connected) but WiFi has dropped.
+`wlan0` has disappeared from the system entirely.
+
+### Root cause
+The Qualcomm WCNSS PRONTO WiFi driver (`pronto_wlan.ko`) on this MSM8916
+chipset has a hardware/firmware limitation: after 2-3 `wpa_supplicant` restart
+cycles (kill + start) within a single boot session, the driver enters an
+unrecoverable state. The `wlan0` network device disappears and cannot be
+brought back. Only a clean reboot restores the driver.
+
+This is **not** a software bug in the gateway — it's a known limitation of
+the pronto_wlan driver on this specific device.
+
+### Trigger
+- WiFi watchdog detecting lost IP and restarting wpa_supplicant
+- Each soft reconnect (kill wpa_supplicant, restart) counts against the
+  driver's limited reload budget
+- After ~3 restarts, the driver crashes and wlan0 vanishes
+
+### Mitigations implemented
+1. **WiFi watchdog hardened** (`wifi_watchdog.go`):
+   - Check interval: 120s (not 45s)
+   - 3-minute boot grace period (no checks at all)
+   - Exponential backoff on failure: 60s → 120s → 240s → 480s → 30min cap
+   - Hard limit: 5 consecutive failures → stop trying until reboot
+   - Missing wlan0 detection: if device is gone, stop immediately
+
+2. **No driver reload at runtime**: The watchdog never does `rmmod`/`insmod`.
+   Only soft reconnects (wpa_supplicant restart), which still eventually
+   trigger the crash but much more slowly.
+
+3. **Clean shutdown button**: "Shut Down Dongle" in web UI prevents stale
+   PID file issues that complicate reboots.
+
+### Workaround
+```bash
+# When WiFi drops and web GUI is unreachable:
+adb reboot
+# Wait ~2 minutes for boot + WiFi + gateway to come back.
+```
+
+### Long-term fix options (not yet implemented)
+- Replace `pronto_wlan.ko` with a newer/patched version if available
+- Use an external USB WiFi dongle instead of the onboard chip
+- Accept periodic reboots as operational procedure (reliable once every 2-3 days)
+
+### Confirmed
+- Driver crashes after ~2-3 wpa_supplicant restarts per boot session
+- Reboot always recovers the driver to a fresh, stable state
+- Gateway continues running fine even when WiFi is down (SMS polling works
+  over the modem, IMAP/SMTP reconnect when WiFi returns)
+
+---
+
+*See also: `STATUS.md` (current status), `GATEWAY.md` (architecture), `REFACTOR_PLAN.md` (fix plan), `DEVICE.md` (hardware and RILD details)*

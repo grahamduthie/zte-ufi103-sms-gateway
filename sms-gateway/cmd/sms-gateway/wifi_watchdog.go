@@ -27,7 +27,8 @@ import (
 )
 
 const (
-	wifiCheckInterval    = 45 * time.Second
+	wifiCheckInterval    = 120 * time.Second  // check every 2 minutes (was 45s)
+	wifiBackoffOnFail    = 5 * time.Minute    // if wlan0 is missing, wait 5 min before trying again
 	wpaStartupWait       = 15 * time.Second
 	wpaSupplicantBin     = "/system/bin/wpa_supplicant"
 	wpaSupplicantConf    = "/data/misc/wifi/wpa_supplicant.conf"
@@ -42,21 +43,40 @@ func runWiFiWatchdog(ctx context.Context, logger *log.Logger) {
 	t := time.NewTicker(wifiCheckInterval)
 	defer t.Stop()
 
+	var lastFailedAt time.Time
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
+		if !wlan0Exists() {
+			// wlan0 device is completely gone — only a reboot fixes this.
+			// Don't waste cycles trying to reconnect; just log and back off.
+			if time.Since(lastFailedAt) > wifiBackoffOnFail {
+				logger.Printf("WiFi watchdog: wlan0 device missing — only a reboot can fix this")
+				lastFailedAt = time.Now()
+			}
+			continue
+		}
 		if !wlan0HasIP() {
 			logger.Printf("WiFi watchdog: wlan0 has no IP — attempting soft reconnect")
 			if err := softReconnectWiFi(logger); err != nil {
 				logger.Printf("WiFi watchdog: soft reconnect failed: %v", err)
+				lastFailedAt = time.Now()
 			} else {
 				logger.Printf("WiFi watchdog: wlan0 reconnected successfully")
+				lastFailedAt = time.Time{} // reset failure clock
 			}
 		}
 	}
+}
+
+// wlan0Exists returns true if the wlan0 network device exists in the kernel.
+func wlan0Exists() bool {
+	_, err := os.Stat("/sys/class/net/wlan0")
+	return err == nil
 }
 
 // wlan0HasIP returns true if wlan0 currently has an IPv4 address assigned.

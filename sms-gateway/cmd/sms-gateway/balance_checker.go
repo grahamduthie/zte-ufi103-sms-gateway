@@ -23,11 +23,15 @@ import (
 )
 
 const (
-	adminEmail             = "graham.duthie@marlowfm.co.uk"
 	giffgafNumber          = "85075"
 	balanceCheckHour       = 10 // 10am UK time (ukNow = UTC+1)
 	balanceResponseTimeout = 10 * time.Minute
 )
+
+// adminEmail is set at startup from config (email.admin_email).
+// Declared as a package-level var so all goroutines in this package share it
+// without needing to thread the value through every function call.
+var adminEmail string
 
 // runBalanceChecker ticks every minute, triggers on Sunday at 10am UK time,
 // enqueues "INFO" to 85075, and waits up to 10 minutes for a response SMS.

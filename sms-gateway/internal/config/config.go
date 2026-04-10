@@ -19,21 +19,23 @@ type Config struct {
 }
 
 type SMSConfig struct {
-	PollIntervalSec int    `json:"poll_interval_seconds"`
-	Storage         string `json:"storage"`
-	DeleteAfterFwd  bool   `json:"delete_after_forward"`
-	SIMPIN          string `json:"sim_pin"` // optional — used to unlock PIN-locked SIM at startup
+	PollIntervalSec   int    `json:"poll_interval_seconds"`
+	Storage           string `json:"storage"`
+	DeleteAfterFwd    bool   `json:"delete_after_forward"`
+	SIMPIN            string `json:"sim_pin"`            // optional — used to unlock PIN-locked SIM at startup
+	KeepaliveNumber   string `json:"keepalive_number"`   // number to text for SIM keepalive (e.g. "+447xxxxxxxxx")
 }
 
 type EmailConfig struct {
-	IMAPHost  string `json:"imap_host"`
-	IMAPPort  int    `json:"imap_port"`
-	SMTPHost  string `json:"smtp_host"`
-	SMTPPort  int    `json:"smtp_port"`
-	Username  string `json:"username"`
-	Password  string `json:"password"`
-	ForwardTo string `json:"forward_to"`
-	FromName  string `json:"from_name"`
+	IMAPHost   string `json:"imap_host"`
+	IMAPPort   int    `json:"imap_port"`
+	SMTPHost   string `json:"smtp_host"`
+	SMTPPort   int    `json:"smtp_port"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	ForwardTo  string `json:"forward_to"`
+	FromName   string `json:"from_name"`
+	AdminEmail string `json:"admin_email"` // receives balance checks, keepalive notices, etc.
 }
 
 type WiFiConfig struct {

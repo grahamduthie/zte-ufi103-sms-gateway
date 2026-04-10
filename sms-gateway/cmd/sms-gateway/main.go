@@ -174,6 +174,16 @@ func main() {
 
 	smsPollInterval := time.Duration(cfg.SMS.PollIntervalSec) * time.Second
 
+	// Set package-level vars from config so goroutines don't need hardcoded values.
+	adminEmail = cfg.Email.AdminEmail
+	keepaliveNumber = cfg.SMS.KeepaliveNumber
+	if adminEmail == "" {
+		logger.Printf("Warning: email.admin_email not set — balance check and keepalive notifications will not be sent")
+	}
+	if keepaliveNumber == "" {
+		logger.Printf("Warning: sms.keepalive_number not set — SIM keepalive texts will not be sent")
+	}
+
 	// Record startup time and reset any stale circuit breaker state.
 	db.SetHealth("started_at", startedAt.UTC().Format(time.RFC3339))
 	db.SetHealth("circuit_breaker", "closed")

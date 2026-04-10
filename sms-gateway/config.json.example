@@ -2,7 +2,8 @@
     "sms": {
         "poll_interval_seconds": 10,
         "storage": "SM",
-        "delete_after_forward": true
+        "delete_after_forward": true,
+        "keepalive_number": "+447xxxxxxxxx"
     },
     "email": {
         "imap_host": "YOUR_IMAP_HOST",
@@ -12,7 +13,8 @@
         "username": "YOUR_EMAIL_USERNAME",
         "password": "YOUR_IONOS_PASSWORD",
         "forward_to": "your-email@example.com",
-        "from_name": "Marlow FM SMS"
+        "from_name": "Marlow FM SMS",
+        "admin_email": "admin@example.com"
     },
     "authorised_senders": ["your-email@example.com"],
     "sms_max_reply_chars": 160,

@@ -22,10 +22,12 @@ import (
 )
 
 const (
-	keepaliveNumber = "+447734139947"
 	keepaliveText   = "Marlow FM Chargable Text"
 	keepaliveMonths = 5
 )
+
+// keepaliveNumber is set at startup from config (sms.keepalive_number).
+var keepaliveNumber string
 
 // runSIMKeepalive ticks hourly, runs its check once per calendar day (UK time),
 // and sends a keepalive text if >5 months have passed since the last chargeable SMS.
@@ -86,6 +88,10 @@ func runSIMKeepalive(ctx context.Context, db *database.DB, bridge *email.Bridge,
 			continue
 		}
 
+		if keepaliveNumber == "" {
+			logger.Printf("SIM keepalive: >%d months since last chargeable SMS but sms.keepalive_number not configured — skipping", keepaliveMonths)
+			continue
+		}
 		logger.Printf("SIM keepalive: >%d months since last chargeable SMS — sending keepalive to %s",
 			keepaliveMonths, keepaliveNumber)
 		_, err = db.EnqueueSMS(keepaliveNumber, keepaliveText, "keepalive", "")

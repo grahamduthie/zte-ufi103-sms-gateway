@@ -40,11 +40,43 @@ trap "busybox rm -f '$PIDFILE'" EXIT INT TERM HUP
 sleep 5
 
 # ── 2. WiFi client mode ───────────────────────────────────────────────────────
-# Skip if wlan0 already has an IP (e.g., on a manual restart mid-session).
+# Three cases:
+#   a) wlan0 has an IP  → already in client mode, skip everything.
+#   b) wlan0 exists but no IP → soft reconnect (restart wpa_supplicant + DHCP).
+#      This handles Android cgroup teardown killing wpa_supplicant when the init
+#      service is restarted. Avoids an unnecessary rmmod/insmod which wears out
+#      the pronto_wlan driver over time.
+#   c) wlan0 missing → full wifi-setup (first boot AP→client switch, driver crash).
+#      Also falls through here if the soft reconnect fails (e.g. first boot,
+#      AP mode still active, or wpa_supplicant.conf not yet written).
 if busybox ifconfig wlan0 2>/dev/null | busybox grep -q 'inet addr'; then
     echo "[$(date)] start.sh: WiFi already in client mode, skipping setup" >> "$LOG"
+elif [ -d /sys/class/net/wlan0 ]; then
+    # wlan0 exists but no IP — try a soft reconnect before resorting to rmmod/insmod.
+    echo "[$(date)] start.sh: wlan0 has no IP, trying soft reconnect..." >> "$LOG"
+    busybox killall wpa_supplicant 2>/dev/null
+    sleep 2
+    busybox ifconfig wlan0 up 2>/dev/null
+    sleep 1
+    busybox rm -f /data/misc/wifi/sockets/wlan0
+    /system/bin/wpa_supplicant -i wlan0 -D nl80211 \
+        -c /data/misc/wifi/wpa_supplicant.conf \
+        -O /data/misc/wifi/sockets -B >> "$LOG" 2>&1
+    sleep 12
+    busybox udhcpc -i wlan0 -q -n \
+        -s $GW_DIR/scripts/udhcpc.sh \
+        -x hostname:dongle >> "$LOG" 2>&1
+    if busybox ifconfig wlan0 2>/dev/null | busybox grep -q 'inet addr'; then
+        echo "[$(date)] start.sh: soft reconnect succeeded" >> "$LOG"
+    else
+        # Soft reconnect failed (AP mode active, no wpa_supplicant.conf, or other
+        # reason). Fall back to full wifi-setup with driver reload.
+        echo "[$(date)] start.sh: soft reconnect failed — running full wifi-setup..." >> "$LOG"
+        /system/bin/sh $GW_DIR/scripts/wifi-setup.sh >> "$LOG" 2>&1
+    fi
 else
-    echo "[$(date)] start.sh: setting up WiFi client mode..." >> "$LOG"
+    # wlan0 device missing entirely — need a full driver reload.
+    echo "[$(date)] start.sh: wlan0 missing — running full wifi-setup..." >> "$LOG"
     /system/bin/sh $GW_DIR/scripts/wifi-setup.sh >> "$LOG" 2>&1
 fi
 

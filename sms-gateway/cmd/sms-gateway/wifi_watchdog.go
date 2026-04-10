@@ -58,6 +58,7 @@ func runWiFiWatchdog(ctx context.Context, logger *log.Logger) {
 	var (
 		consecutiveFailures int
 		nextAttemptAt       time.Time
+		graceExpired        bool
 	)
 
 	for {
@@ -68,10 +69,17 @@ func runWiFiWatchdog(ctx context.Context, logger *log.Logger) {
 		}
 
 		// Skip checks during boot grace period.
-		select {
-		case <-grace.C:
-		default:
-			continue
+		// Use a boolean flag rather than re-reading grace.C: the timer channel
+		// only sends one value, so repeated select { case <-grace.C: ... default: continue }
+		// would always hit default after the first drain, silently disabling the
+		// watchdog for the entire session.
+		if !graceExpired {
+			select {
+			case <-grace.C:
+				graceExpired = true
+			default:
+				continue
+			}
 		}
 
 		// If we've hit the hard failure limit, stop trying entirely.

@@ -59,7 +59,10 @@ func (s *Server) setupHandler() {
 	staticSub, _ := fs.Sub(staticFS, "static")
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 
-	s.handler = mux
+	s.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "SMS-Gateway")
+		mux.ServeHTTP(w, r)
+	})
 }
 
 // requireAuth wraps an http.Handler, redirecting unauthenticated requests to /login.
@@ -190,7 +193,11 @@ func (s *Server) Start() error {
 	staticSub, _ := fs.Sub(staticFS, "static")
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 
-	return http.ListenAndServe(s.addr, mux)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "SMS-Gateway")
+		mux.ServeHTTP(w, r)
+	})
+	return http.ListenAndServe(s.addr, handler)
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {

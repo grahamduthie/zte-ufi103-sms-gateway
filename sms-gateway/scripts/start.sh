@@ -65,7 +65,7 @@ elif [ -d /sys/class/net/wlan0 ]; then
     sleep 12
     busybox udhcpc -i wlan0 -q -n \
         -s $GW_DIR/scripts/udhcpc.sh \
-        -x hostname:dongle >> "$LOG" 2>&1
+        -x hostname:sms-gateway >> "$LOG" 2>&1
     if busybox ifconfig wlan0 2>/dev/null | busybox grep -q 'inet addr'; then
         echo "[$(date)] start.sh: soft reconnect succeeded" >> "$LOG"
     else

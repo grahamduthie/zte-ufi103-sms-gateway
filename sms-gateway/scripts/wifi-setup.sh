@@ -83,7 +83,7 @@ sleep 10
 # udhcpc.sh sets the IP, route, and DNS when the lease is bound.
 busybox udhcpc -i wlan0 -q -n \
     -s $GW_DIR/scripts/udhcpc.sh \
-    -x hostname:dongle
+    -x hostname:sms-gateway
 DHCP_RC=$?
 sleep 1
 

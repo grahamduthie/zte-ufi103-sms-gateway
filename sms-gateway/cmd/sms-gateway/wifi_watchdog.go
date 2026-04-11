@@ -201,7 +201,7 @@ func softReconnectWiFi(logger *log.Logger) error {
 		"-q", // quit after lease
 		"-n", // exit if no lease
 		"-s", udhcpcScript,
-		"-x", "hostname:dongle",
+		"-x", "hostname:sms-gateway",
 	)
 	if out, err := dhcp.CombinedOutput(); err != nil {
 		return fmt.Errorf("udhcpc: %v (%s)", err, bytes.TrimSpace(out))

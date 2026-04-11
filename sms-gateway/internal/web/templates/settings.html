@@ -46,12 +46,28 @@
         .danger-actions form { margin: 0; padding: 0; }
         .danger-actions button { display: inline-block; vertical-align: middle; }
         .wifi-list { margin: 0 0 .75rem; padding: 0; list-style: none; }
-        .wifi-list li { display: flex; align-items: center; justify-content: space-between;
-                        padding: .4rem 0; border-bottom: 1px solid #e9ecef; }
+        .wifi-list li { padding: .5rem 0; border-bottom: 1px solid #e9ecef; }
         .wifi-list li:last-child { border-bottom: none; }
+        .wifi-row { display: flex; align-items: center; gap: .4rem; }
+        .wifi-net-info { flex: 1; min-width: 0; }
         .wifi-net-name { font-weight: 500; font-size: .9rem; }
         .wifi-net-meta { font-size: .75rem; color: #6c757d; }
-        .wifi-add-grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: .5rem; align-items: end; }
+        .wifi-actions { display: flex; gap: .3rem; flex-shrink: 0; }
+        .wifi-actions form { margin: 0; }
+        .wifi-btn { border: 1px solid #adb5bd; background: #fff; color: #495057;
+                    padding: .2rem .55rem; border-radius: 5px; font-size: .8rem; cursor: pointer; white-space: nowrap; }
+        .wifi-btn:hover { background: #e9ecef; }
+        .wifi-btn-danger { border-color: #dc3545; color: #dc3545; }
+        .wifi-btn-danger:hover { background: #dc3545; color: #fff; }
+        .wifi-btn-primary { border-color: #0d6efd; color: #0d6efd; }
+        .wifi-btn-primary:hover { background: #0d6efd; color: #fff; }
+        .wifi-edit-form { margin-top: .5rem; }
+        .wifi-edit-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .4rem; align-items: end; }
+        @media (max-width: 600px) { .wifi-edit-grid { grid-template-columns: 1fr; } }
+        .wifi-edit-grid label { margin-bottom: 0; font-size: .85rem; }
+        .wifi-edit-grid input, .wifi-edit-grid select { padding: .35rem .5rem; font-size: .85rem; }
+        .wifi-edit-actions { margin-top: .4rem; display: flex; gap: .5rem; align-items: center; }
+        .wifi-add-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .5rem; align-items: end; margin-top: .75rem; }
         @media (max-width: 600px) { .wifi-add-grid { grid-template-columns: 1fr; } }
         .wifi-add-grid label { margin-bottom: 0; }
         .wifi-flash-ok  { color: #155724; background: #d4edda; padding: .4rem .75rem; border-radius: 4px; font-size: .85rem; margin-bottom: .5rem; }
@@ -74,7 +90,7 @@
 </header>
 <main>
     <h2>Settings</h2>
-    {{if .Saved}}<p style="color:#155724;background:#d4edda;padding:.5rem 1rem;border-radius:4px">Settings saved.</p>{{end}}
+    {{if .Saved}}<p style="color:#155724;background:#d4edda;padding:.5rem 1rem;border-radius:4px;margin-bottom:.75rem">Settings saved.</p>{{end}}
     <form method="POST" action="/settings">
         <article>
             <header><strong>Email</strong></header>
@@ -113,49 +129,6 @@
                 </label>
             </div>
         </article>
-        <article id="wifi">
-            <header><strong>WiFi Networks</strong></header>
-            {{if .WiFiSaved}}<p class="wifi-flash-ok">WiFi network list updated. Changes take effect on next reboot.</p>{{end}}
-            {{if .WiFiError}}<p class="wifi-flash-err">{{.WiFiError}}</p>{{end}}
-            {{if .Cfg.WiFi.Networks}}
-            <ul class="wifi-list">
-                {{range $i, $n := .Cfg.WiFi.Networks}}
-                <li>
-                    <div>
-                        <div class="wifi-net-name">{{$n.SSID}}</div>
-                        <div class="wifi-net-meta">{{$n.Security}} &bull; priority {{$n.Priority}}</div>
-                    </div>
-                    <form method="POST" action="/settings/wifi/delete" style="margin:0">
-                        <input type="hidden" name="index" value="{{$i}}">
-                        <button type="submit" class="btn-danger" style="padding:.2rem .6rem;font-size:.8rem"
-                            onclick="return confirm('Remove {{$n.SSID}}?')">Remove</button>
-                    </form>
-                </li>
-                {{end}}
-            </ul>
-            {{else}}
-            <p style="color:#6c757d;font-size:.85rem;font-style:italic;margin-bottom:.75rem">No networks saved.</p>
-            {{end}}
-            <form method="POST" action="/settings/wifi/add">
-                <div class="wifi-add-grid">
-                    <label>SSID
-                        <input type="text" name="ssid" placeholder="Network name" required>
-                    </label>
-                    <label>Password
-                        <input type="password" name="psk" placeholder="WPA2 passphrase">
-                    </label>
-                    <label>Security
-                        <select name="security">
-                            <option value="WPA2">WPA2</option>
-                            <option value="WPA">WPA</option>
-                            <option value="OPEN">Open</option>
-                        </select>
-                    </label>
-                </div>
-                <button type="submit" style="background:#0d6efd;color:#fff;border:none;padding:.4rem 1rem;border-radius:6px;cursor:pointer;font-size:.85rem;margin-top:.25rem">Add Network</button>
-            </form>
-            <small style="display:block;margin-top:.5rem;color:#6c757d">WiFi changes take effect after the next reboot. The dongle will connect to the highest-priority reachable network.</small>
-        </article>
         <article>
             <header><strong>Authorised Reply Senders</strong></header>
             <label>Email addresses allowed to send SMS replies (one per line)
@@ -167,6 +140,95 @@
         <button type="submit">Save Settings</button>
     </form>
     <p><small>Note: all settings changes take effect after restarting the gateway (see Danger Zone below).</small></p>
+
+    <article id="wifi">
+        <header><strong>WiFi Networks</strong></header>
+        {{if .WiFiSaved}}<p class="wifi-flash-ok">WiFi network list updated. Changes take effect on next reboot.</p>{{end}}
+        {{if .WiFiError}}<p class="wifi-flash-err">{{.WiFiError}}</p>{{end}}
+        {{if .Cfg.WiFi.Networks}}
+        <ul class="wifi-list">
+            {{range $i, $n := .Cfg.WiFi.Networks}}
+            <li>
+                <div class="wifi-row">
+                    <div class="wifi-net-info">
+                        <div class="wifi-net-name">{{$n.SSID}}</div>
+                        <div class="wifi-net-meta">{{$n.Security}} &bull; priority {{$n.Priority}}</div>
+                    </div>
+                    <div class="wifi-actions">
+                        {{if gt $i 0}}
+                        <form method="POST" action="/settings/wifi/move">
+                            <input type="hidden" name="index" value="{{$i}}">
+                            <input type="hidden" name="direction" value="up">
+                            <button type="submit" class="wifi-btn" title="Move up">↑</button>
+                        </form>
+                        {{end}}
+                        {{if lt $i $.LastWiFiIdx}}
+                        <form method="POST" action="/settings/wifi/move">
+                            <input type="hidden" name="index" value="{{$i}}">
+                            <input type="hidden" name="direction" value="down">
+                            <button type="submit" class="wifi-btn" title="Move down">↓</button>
+                        </form>
+                        {{end}}
+                        <a href="/settings?edit_wifi={{$i}}#wifi" class="wifi-btn wifi-btn-primary" style="text-decoration:none">Edit</a>
+                        <form method="POST" action="/settings/wifi/delete">
+                            <input type="hidden" name="index" value="{{$i}}">
+                            <button type="submit" class="wifi-btn wifi-btn-danger"
+                                onclick="return confirm('Remove {{$n.SSID}}?')">Remove</button>
+                        </form>
+                    </div>
+                </div>
+                {{if eq $i $.EditWiFiIdx}}
+                <div class="wifi-edit-form">
+                    <form method="POST" action="/settings/wifi/edit">
+                        <input type="hidden" name="index" value="{{$i}}">
+                        <div class="wifi-edit-grid">
+                            <label>SSID
+                                <input type="text" name="ssid" value="{{$n.SSID}}" required>
+                            </label>
+                            <label>Password <small>(blank = keep)</small>
+                                <input type="password" name="psk" placeholder="unchanged" autocomplete="new-password">
+                            </label>
+                            <label>Security
+                                <select name="security">
+                                    <option value="WPA2"{{if eq $n.Security "WPA2"}} selected{{end}}>WPA2</option>
+                                    <option value="WPA"{{if eq $n.Security "WPA"}} selected{{end}}>WPA</option>
+                                    <option value="OPEN"{{if eq $n.Security "OPEN"}} selected{{end}}>Open</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="wifi-edit-actions">
+                            <button type="submit" class="wifi-btn wifi-btn-primary">Save</button>
+                            <a href="/settings#wifi" class="wifi-btn" style="text-decoration:none">Cancel</a>
+                        </div>
+                    </form>
+                </div>
+                {{end}}
+            </li>
+            {{end}}
+        </ul>
+        {{else}}
+        <p style="color:#6c757d;font-size:.85rem;font-style:italic;margin-bottom:.75rem">No networks saved.</p>
+        {{end}}
+        <form method="POST" action="/settings/wifi/add">
+            <div class="wifi-add-grid">
+                <label>SSID
+                    <input type="text" name="ssid" placeholder="Network name" required>
+                </label>
+                <label>Password
+                    <input type="password" name="psk" placeholder="WPA2 passphrase">
+                </label>
+                <label>Security
+                    <select name="security">
+                        <option value="WPA2">WPA2</option>
+                        <option value="WPA">WPA</option>
+                        <option value="OPEN">Open</option>
+                    </select>
+                </label>
+            </div>
+            <button type="submit" style="background:#0d6efd;color:#fff;border:none;padding:.4rem 1rem;border-radius:6px;cursor:pointer;font-size:.85rem;margin-top:.25rem">Add Network</button>
+        </form>
+        <small style="display:block;margin-top:.5rem;color:#6c757d">WiFi changes take effect after the next reboot. The dongle will connect to the highest-priority reachable network.</small>
+    </article>
 
     <hr>
     <div class="danger-zone">

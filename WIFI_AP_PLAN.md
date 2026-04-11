@@ -4,6 +4,19 @@
 *Created: 2026-04-05*
 *Revised: 2026-04-11 — single binary approach, save-and-reboot mode switching,
 existing config schema, testing strategy added*
+*Status: **COMPLETE** — fully implemented and deployed 2026-04-11*
+
+> **Implementation notes** (deviations from plan):
+> - Route structure: `/setup/add`, `/setup/delete`, `/setup/save` instead of single `POST /setup`
+> - The `/generate_204` probe returns HTTP 302 redirect (not 200) — sending 302 correctly triggers
+>   the OS captive portal UI, while 204 would signal "already authenticated"
+> - The 120-second busybox timeout was not used; `start.sh` instead checks for IP after all
+>   attempt paths (wlan0-already-connected, soft-reconnect, full wifi-setup.sh) and falls
+>   back to AP only if wlan0 still has no IP after all paths complete
+> - The `/api/wifi-preview`, `/api/wifi-diag`, and event log features from `WIFI_AP_TEST_PLAN.md`
+>   were not implemented — they were reviewer suggestions, not in scope for this plan
+> - **Added beyond plan**: WiFi management UI in the main Settings page — add, edit, reorder (↑/↓),
+>   and remove networks without needing the setup captive portal
 
 *Trigger: When the dongle boots and can't connect to its saved WiFi network,
 it falls back to AP mode so a user can configure WiFi credentials via a web page.*
@@ -415,34 +428,35 @@ a captive portal setup flow.
 
 ### Phase 1: `sms-gateway --setup-mode` (core)
 
-| Step | Task |
-|------|------|
-| 1.1 | Add `--setup-mode` flag to `main.go`; skip AT session + all goroutines except web server |
-| 1.2 | Add setup-mode route handler in `internal/web/server.go` (or a minimal separate handler) |
-| 1.3 | Write `setup.html` template — WiFi network list, add form, Save & Reboot button |
-| 1.4 | Implement `POST /setup` — validate, write `config.json` + `wpa_supplicant.conf`, reboot |
-| 1.5 | Add captive portal probe handlers (`/generate_204`, `/hotspot-detect.html`, `/ncsi.txt`) |
-| 1.6 | Add `force_ap_mode` to `WiFiConfig` struct |
+| Step | Task | Status |
+|------|------|--------|
+| 1.1 | Add `--setup-mode` flag to `main.go`; skip AT session + all goroutines except web server | ✅ Done |
+| 1.2 | Add setup-mode handler in `cmd/sms-gateway/setup_mode.go` (separate from main server) | ✅ Done |
+| 1.3 | Write inline setup HTML — WiFi network list, add form, Save & Reboot button | ✅ Done |
+| 1.4 | Implement `/setup/add`, `/setup/delete`, `/setup/save` — validate, write config + wpa conf, reboot | ✅ Done |
+| 1.5 | Add captive portal probe handlers (`/generate_204`, `/hotspot-detect.html`, `/ncsi.txt`) | ✅ Done |
+| 1.6 | Add `force_ap_mode` to `WiFiConfig` struct | ✅ Done |
 
 ### Phase 2: AP mode infrastructure
 
-| Step | Task |
-|------|------|
-| 2.1 | Write `wifi-ap-start.sh` (driver reload, hostapd, dnsmasq, iptables) |
-| 2.2 | Write `hostapd-setup.conf` with `SMS-Gateway-Setup` SSID + fixed password |
-| 2.3 | Extend `wifi-setup.sh` to read `wifi.networks` from `config.json` and generate `wpa_supplicant.conf` |
-| 2.4 | Add 120-second timeout to WiFi client attempt in `start.sh` |
-| 2.5 | Add AP fallback branch to `start.sh` |
+| Step | Task | Status |
+|------|------|--------|
+| 2.1 | Write `wifi-ap-start.sh` (driver reload, hostapd, dnsmasq, iptables) | ✅ Done |
+| 2.2 | Write `hostapd-setup.conf` with `SMS-Gateway-Setup` SSID + fixed password | ✅ Done |
+| 2.3 | Remove hardcoded creds from `wifi-setup.sh`; use `/data/misc/wifi/wpa_supplicant.conf` | ✅ Done |
+| 2.4 | Extract `config.WriteWPAConf()` shared function in `internal/config/wpa.go` | ✅ Done |
+| 2.5 | Add AP fallback branch to `start.sh` (force_ap_mode check + post-attempt IP check) | ✅ Done |
 
 ### Phase 3: Integration
 
-| Step | Task |
-|------|------|
-| 3.1 | End-to-end test with `force_ap_mode: true` (see Testing section) |
-| 3.2 | Test wrong-password path (real failure) |
-| 3.3 | Test captive portal on iOS, Android, desktop |
-| 3.4 | Test that normal SMS operation resumes after AP → reboot → client |
-| 3.5 | Deploy and update docs |
+| Step | Task | Status |
+|------|------|--------|
+| 3.1 | End-to-end test with `force_ap_mode: true` (Level 1) | ✅ Done — AP hotspot visible, captive portal works, save + reboot cycle verified |
+| 3.2 | Test wrong-password path (real failure) | ⬜ Not yet done |
+| 3.3 | Test captive portal on iOS, Android, desktop | ⬜ Not yet done |
+| 3.4 | Test that normal SMS operation resumes after AP → reboot → client | ✅ Done (normal boot after Level 1 test) |
+| 3.5 | Deploy and update docs | ✅ Done 2026-04-11 |
+| 3.6 | WiFi management UI in Settings page (bonus — add/edit/reorder/remove) | ✅ Done 2026-04-11 |
 
 ---
 

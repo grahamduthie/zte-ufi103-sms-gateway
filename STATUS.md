@@ -1,6 +1,6 @@
 # ZTE UFI103 SMS Gateway — Status & Quick Reference
 
-*Last updated: 2026-04-11 10:00 BST*
+*Last updated: 2026-04-11 12:30 BST*
 *Device Serial: 19ce8266*
 
 ---
@@ -27,11 +27,13 @@
 | GiffGaff balance check | ✅ | Every Sunday ~10am UK; texts "INFO" to 85075; emails response to graham.duthie@marlowfm.co.uk; 10-min timeout |
 | Boot persistence | ✅ | `qrngp` wrapper in `/init.target.rc` — triggers on `sys.boot_completed=1` |
 | WiFi auto-setup on boot | ✅ | `start.sh` switches to client mode via `wifi-setup.sh` + dynamic DHCP |
-| Single-instance guard | ✅ | PID file in `start.sh` prevents duplicate gateway processes |
+| Single-instance guard | ✅ | PID file in `start.sh` prevents duplicate gateway processes; stale-PID detection via `/proc/$PID/cmdline` (added 2026-04-11) |
 | Log housekeeping | ✅ | Hourly rotation at 10 MB, WAL checkpoint, 90-day record pruning |
 | Conversation pagination | ✅ | 30 per page with indexes on `(sender, received_at)` and `(to_number, created_at)` |
 | Dashboard | ✅ | Monthly counts, last sent/received (UK time), gateway status, uptime |
 | Settings controls | ✅ | Save config, Restart Gateway, Reboot Dongle, Shut Down Dongle |
+| WiFi management UI | ✅ | Add, edit, reorder (↑/↓), and remove networks from Settings page; writes `wpa_supplicant.conf` immediately (2026-04-11) |
+| WiFi AP fallback | ✅ | On boot failure: `wifi-ap-start.sh` → `sms-gateway --setup-mode` captive portal on `SMS-Gateway-Setup` hotspot; `force_ap_mode` flag for testing (2026-04-11) |
 | Auth gate | ✅ | Password set in `config.json` (`web.admin_password`) — not hardcoded |
 | Logo embedding | ✅ | Logo loaded at startup, embedded as CID attachment in HTML emails |
 | Date-based session IDs | ✅ | Format `DDMMYY-NNN` (e.g. `060426-001`), stored in `daemon_health` |
@@ -117,7 +119,6 @@ recover — reloading the kernel module alone does not reset the RF subsystem
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| WiFi management UI | ❌ | Not implemented — planned as part of `WIFI_AP_PLAN.md` |
 | Host USB access | ⚠️ | Requires `sudo ip addr add 192.168.100.2/24 dev enx02030f556538` (RNDIS interface) |
 
 ## Current SIM
@@ -156,19 +157,17 @@ adb shell "busybox tail -f /data/sms-gateway/sms-gateway.log"
 
 ```bash
 cd /home/marlowfm/dongle/sms-gateway
-GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -ldflags="-s -w" -o sms-gateway ./cmd/sms-gateway
+GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -o sms-gateway-arm ./cmd/sms-gateway
 
-# Always push to .new first to avoid ETXTBSY (can't replace a running binary)
-adb push sms-gateway /data/sms-gateway/sms-gateway.new
+# Push binary directly (the running binary can be replaced while running on Android)
+adb push sms-gateway-arm /data/sms-gateway/sms-gateway
 
-# The running gateway is owned by root (started by init service).
-# Use librank to kill it, then move the new binary into place.
-# start.sh's crash-restart loop will pick up the new binary within 10s.
-adb shell "/system/xbin/librank /system/bin/busybox kill \$(busybox ps | busybox awk '/sms-gateway$/{print \$1}')"
-sleep 2
-adb shell "/system/xbin/librank /system/bin/busybox mv /data/sms-gateway/sms-gateway.new /data/sms-gateway/sms-gateway"
-# Wait ~10s for start.sh to restart the gateway, then check:
-sleep 12 && curl -s http://172.16.10.226/status | python3 -m json.tool
+# Kill both sms-gateway instances via librank (they run as root, adb shell is uid=2000)
+adb shell "/system/xbin/librank /system/bin/sh -c 'kill \$(busybox ps | busybox awk \"/sms-gateway\$/{print \$1}\")'"
+
+# start.sh's crash-restart loop picks up the new binary within 10s.
+# Check the log to confirm restart:
+adb shell "busybox tail -5 /data/sms-gateway/sms-gateway.log"
 ```
 
 **IMPORTANT**: The gateway process is owned by root (uid=0, started by the init
@@ -195,13 +194,17 @@ adb shell "setprop ctl.start sms-gw"
 ```
 /data/sms-gateway/
 ├── sms-gateway          # Go binary (~16MB, ARM static)
-├── sms-gateway.new      # Staging area for binary updates
 ├── config.json          # Credentials and settings (NOT in git — see .gitignore)
 ├── sms.db               # SQLite database (WAL mode)
 ├── sms-gateway.log      # Runtime log (rotated at 10MB by housekeeping goroutine)
 ├── sms-gateway.log.1    # Previous log file (one generation kept)
 ├── gateway.pid          # PID file for single-instance guard (root-owned)
 └── scripts/             # WiFi setup scripts
+    ├── start.sh          # Boot entry point (also deployed as /data/sms-gateway/start.sh)
+    ├── wifi-setup.sh     # AP→client mode switch
+    ├── wifi-ap-start.sh  # Client→AP mode switch + hostapd + dnsmasq + iptables
+    ├── hostapd-setup.conf # Static hostapd config (SSID: SMS-Gateway-Setup)
+    └── udhcpc.sh         # DHCP event script
 
 /data/misc/wifi/
 ├── wpa_supplicant.conf  # WiFi client config (multi-network)
@@ -218,11 +221,12 @@ adb shell "setprop ctl.start sms-gw"
 ├── BUGS.md                    # All bugs found and fixed (including WiFi driver issue)
 ├── SMS_MODEM_ARCHITECTURE.md  # CNMI/QMI SMS routing research and future fix options
 ├── REFACTOR_PLAN.md           # Completed refactoring plan (all items done)
-├── WIFI_AP_PLAN.md            # Planned WiFi AP fallback feature
+├── WIFI_AP_PLAN.md            # WiFi AP fallback — design plan (implemented 2026-04-11)
+├── WIFI_AP_TEST_PLAN.md       # WiFi AP fallback — test plan (Level 1 complete)
 ├── sms-gateway/               # Go source code (no credentials in git)
 └── backup/                    # Partition backups (sbl1, aboot, boot, etc.)
 ```
 
 ---
 
-*See also: `DEVICE.md` (hardware specs, root, SIM, AT commands), `GATEWAY.md` (architecture, config, data flow, testing), `BUGS.md` (all bugs and fixes, including WiFi driver instability), `SMS_MODEM_ARCHITECTURE.md` (CNMI/QMI SMS routing research and future fix options), `REFACTOR_PLAN.md` (completed refactoring items), `WIFI_AP_PLAN.md` (planned WiFi AP fallback with captive portal)*
+*See also: `DEVICE.md` (hardware specs, root, SIM, AT commands), `GATEWAY.md` (architecture, config, data flow, testing), `BUGS.md` (all bugs and fixes, including WiFi driver instability), `SMS_MODEM_ARCHITECTURE.md` (CNMI/QMI SMS routing research and future fix options), `REFACTOR_PLAN.md` (completed refactoring items), `WIFI_AP_PLAN.md` (WiFi AP fallback — design plan, implemented 2026-04-11)*

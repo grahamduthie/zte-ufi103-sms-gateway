@@ -55,6 +55,8 @@ func (s *Server) setupHandler() {
 	mux.HandleFunc("/settings", s.requireAuth(s.handleSettings))
 	mux.HandleFunc("/settings/wifi/add", s.requireAuth(s.handleWiFiAdd))
 	mux.HandleFunc("/settings/wifi/delete", s.requireAuth(s.handleWiFiDelete))
+	mux.HandleFunc("/settings/wifi/edit", s.requireAuth(s.handleWiFiEdit))
+	mux.HandleFunc("/settings/wifi/move", s.requireAuth(s.handleWiFiMove))
 	mux.HandleFunc("/restarting", s.handleRestarting)
 	mux.HandleFunc("/status", s.requireAuth(s.handleStatus))
 
@@ -190,6 +192,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/settings", s.requireAuth(s.handleSettings))
 	mux.HandleFunc("/settings/wifi/add", s.requireAuth(s.handleWiFiAdd))
 	mux.HandleFunc("/settings/wifi/delete", s.requireAuth(s.handleWiFiDelete))
+	mux.HandleFunc("/settings/wifi/edit", s.requireAuth(s.handleWiFiEdit))
+	mux.HandleFunc("/settings/wifi/move", s.requireAuth(s.handleWiFiMove))
 	mux.HandleFunc("/restarting", s.handleRestarting)
 	mux.HandleFunc("/status", s.requireAuth(s.handleStatus))
 
@@ -448,12 +452,18 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		s.handleSettingsPost(w, r)
 		return
 	}
+	editIdx := -1
+	fmt.Sscanf(r.URL.Query().Get("edit_wifi"), "%d", &editIdx)
+	lastIdx := len(s.cfg.WiFi.Networks) - 1
+
 	data := map[string]interface{}{
-		"Title":      "Settings",
-		"Cfg":        s.cfg,
-		"Saved":      r.URL.Query().Get("saved") == "1",
-		"WiFiSaved":  r.URL.Query().Get("wifi_saved") == "1",
-		"WiFiError":  r.URL.Query().Get("wifi_error"),
+		"Title":       "Settings",
+		"Cfg":         s.cfg,
+		"Saved":       r.URL.Query().Get("saved") == "1",
+		"WiFiSaved":   r.URL.Query().Get("wifi_saved") == "1",
+		"WiFiError":   r.URL.Query().Get("wifi_error"),
+		"EditWiFiIdx": editIdx,
+		"LastWiFiIdx": lastIdx,
 	}
 	if err := s.tmpl.ExecuteTemplate(w, "settings.html", data); err != nil {
 		http.Error(w, "Template error: "+err.Error(), http.StatusInternalServerError)
@@ -612,6 +622,76 @@ func (s *Server) saveWiFiConfig(w http.ResponseWriter, r *http.Request) {
 		_ = err
 	}
 	http.Redirect(w, r, "/settings?wifi_saved=1#wifi", http.StatusSeeOther)
+}
+
+// handleWiFiEdit replaces the SSID/password/security for an existing network.
+func (s *Server) handleWiFiEdit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Redirect(w, r, "/settings#wifi", http.StatusSeeOther)
+		return
+	}
+	r.ParseForm()
+	var idx int
+	if _, err := fmt.Sscanf(r.FormValue("index"), "%d", &idx); err != nil || idx < 0 || idx >= len(s.cfg.WiFi.Networks) {
+		http.Redirect(w, r, "/settings#wifi", http.StatusSeeOther)
+		return
+	}
+	ssid := strings.TrimSpace(r.FormValue("ssid"))
+	psk := r.FormValue("psk")
+	security := r.FormValue("security")
+	if security == "" {
+		security = "WPA2"
+	}
+	if ssid == "" {
+		http.Redirect(w, r, "/settings?wifi_error=SSID+is+required#wifi", http.StatusSeeOther)
+		return
+	}
+	if strings.ToUpper(security) != "OPEN" && psk != "" && len(psk) < 8 {
+		http.Redirect(w, r, "/settings?wifi_error=Password+must+be+at+least+8+characters#wifi", http.StatusSeeOther)
+		return
+	}
+	for i, n := range s.cfg.WiFi.Networks {
+		if i != idx && n.SSID == ssid {
+			http.Redirect(w, r, "/settings?wifi_error=Network+name+already+used#wifi", http.StatusSeeOther)
+			return
+		}
+	}
+	s.cfg.WiFi.Networks[idx].SSID = ssid
+	s.cfg.WiFi.Networks[idx].Security = security
+	if psk != "" {
+		s.cfg.WiFi.Networks[idx].Password = psk
+	}
+	s.saveWiFiConfig(w, r)
+}
+
+// handleWiFiMove swaps a network up or down in the priority list.
+func (s *Server) handleWiFiMove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Redirect(w, r, "/settings#wifi", http.StatusSeeOther)
+		return
+	}
+	r.ParseForm()
+	var idx int
+	if _, err := fmt.Sscanf(r.FormValue("index"), "%d", &idx); err != nil {
+		http.Redirect(w, r, "/settings#wifi", http.StatusSeeOther)
+		return
+	}
+	nets := s.cfg.WiFi.Networks
+	switch r.FormValue("direction") {
+	case "up":
+		if idx > 0 {
+			nets[idx], nets[idx-1] = nets[idx-1], nets[idx]
+		}
+	case "down":
+		if idx < len(nets)-1 {
+			nets[idx], nets[idx+1] = nets[idx+1], nets[idx]
+		}
+	}
+	for i := range nets {
+		nets[i].Priority = i + 1
+	}
+	s.cfg.WiFi.Networks = nets
+	s.saveWiFiConfig(w, r)
 }
 
 // handleRestarting shows a "restarting" page that polls /status until the gateway is back.

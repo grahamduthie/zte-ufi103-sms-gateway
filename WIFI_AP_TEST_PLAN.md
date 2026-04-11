@@ -3,6 +3,13 @@
 
 *Created: 2026-04-05*
 *Reviews: `WIFI_AP_PLAN.md` (design plan)*
+*Updated: 2026-04-11 — Level 1 test complete; notes added on implemented vs. not-implemented items*
+
+> **Note**: Sections 1 (Debuggability), 2 (Unit tests for `wifimgr` package), and 4 (Automated
+> test framework) describe features that were **not implemented** in the final design. They are
+> retained as a record of what was considered. The `internal/wifimgr` package was never created;
+> the `/api/wifi-config`, `/api/wifi-preview`, `/api/wifi-diag` endpoints were not added; and
+> no event log file is written. The implemented design uses the simpler approach in `WIFI_AP_PLAN.md`.
 
 ---
 
@@ -388,38 +395,33 @@ echo "Post-deploy check complete"
 
 ## 6. Test Matrix
 
-### 6.1 WiFi Network Scenarios
+### 6.1 WiFi Network Scenarios (setup page validation)
 
-| Scenario | SSID | PSK | Expected | Automated? |
-|----------|------|-----|----------|------------|
-| Happy path | YOUR_WIFI_SSID_1 | YOUR_WIFI_PASSWORD | Connects, gateway starts | ✅ Yes |
-| Wrong SSID | NETGEAR_XXXX | YOUR_WIFI_PASSWORD | Fails → AP fallback | ✅ Yes (destructive) |
-| Wrong PSK | YOUR_WIFI_SSID_1 | wrongpass | Fails auth → AP fallback | ✅ Yes (destructive) |
-| Empty SSID | | YOUR_WIFI_PASSWORD | Validation reject | ✅ Yes |
-| Short PSK | YOUR_WIFI_SSID_1 | abc | Validation reject | ✅ Yes |
-| Long SSID (32 chars) | aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | YOUR_WIFI_PASSWORD | Accepts, tries connect | ✅ Yes |
-| SSID >32 chars | aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | YOUR_WIFI_PASSWORD | Validation reject | ✅ Yes |
-| PSK = 8 chars | YOUR_WIFI_SSID_1 | 12345678 | Accepts (minimum), tries connect | ✅ Yes |
-| PSK = 63 chars | YOUR_WIFI_SSID_1 | 123456789012345678901234567890123456789012345678901234567890123 | Accepts (maximum), tries connect | ✅ Yes |
-| PSK >63 chars | YOUR_WIFI_SSID_1 | (64 chars) | Validation reject | ✅ Yes |
-| Unicode SSID | Café_ WiFi | YOUR_WIFI_PASSWORD | Accepts, tries connect | ✅ Yes |
-| Unicode PSK | YOUR_WIFI_SSID_1 | café1234 | Accepts, tries connect | ✅ Yes |
-| No config file | N/A | N/A | AP mode with defaults | ✅ Yes |
-| Corrupt config | N/A | N/A | AP mode, logs error | ✅ Yes |
+*Note: "Automated" column below referred to the unimplemented `/api/wifi-config` endpoint.
+Validation is tested manually via the setup page or Settings WiFi management UI.*
+
+| Scenario | SSID | PSK | Expected | Tested? |
+|----------|------|-----|----------|---------|
+| Happy path | NETGEAR_24ng | correct | Connects, gateway starts | ✅ Yes |
+| force_ap_mode → save new network | NETGEAR_24ng | correct | Config written, reboots, connects | ✅ Yes (2026-04-11) |
+| Wrong SSID | NONEXISTENT | correct | Fails → AP fallback | ⬜ Not yet |
+| Wrong PSK | NETGEAR_24ng | wrongpass | Fails auth → AP fallback | ⬜ Not yet |
+| Empty SSID | (empty) | correct | Validation reject: "SSID is required" | ✅ Yes |
+| Short PSK | valid | abc | Validation reject: "Password must be ≥8 chars" | ✅ Yes |
+| Duplicate SSID | existing | correct | Validation reject: "Network already exists" | ✅ Yes |
 
 ### 6.2 Device State Scenarios
 
-| Scenario | Initial State | Action | Expected | Automated? |
-|----------|--------------|--------|----------|------------|
-| Boot with valid config | AP mode | Power on | CLIENT mode within 60s | ✅ Yes (destructive) |
-| Boot with no config | AP mode | Power on | AP mode, serves setup | ✅ Yes |
-| Boot with invalid config | AP mode | Power on | AP mode, serves setup | ✅ Yes |
-| CLIENT → AP (manual) | CLIENT mode | POST bad config | Falls back to AP | ✅ Yes (destructive) |
-| AP → CLIENT (manual) | AP mode | POST valid config | Switches to CLIENT | ✅ Yes (destructive) |
-| Power loss during switch | Any | Kill power | Reboots to safe state | ❌ Manual only |
-| Network drop during CLIENT | CLIENT mode | Router off | Detects loss, retries/fallbacks | ❌ Manual only |
-| AP mode: no clients connect | AP mode | Wait 24h | Stays in AP mode, no crash | ❌ Manual only |
-| AP mode: 5 clients connect | AP mode | Connect 5 devices | All get DHCP, all see setup | ❌ Manual only |
+| Scenario | Initial State | Action | Expected | Tested? |
+|----------|--------------|--------|----------|---------|
+| Boot with valid config | Normal | Power on | CLIENT mode, gateway starts | ✅ Routine |
+| force_ap_mode + reboot | Client | Edit config, reboot | AP hotspot up, setup page served | ✅ 2026-04-11 |
+| AP → save + reboot → client | AP mode | Save via setup page | Connects, SMS flow resumes | ✅ 2026-04-11 |
+| Boot with no known WiFi | Any | WiFi setup fails | AP fallback, setup page | ⬜ Not yet |
+| Power loss during mode switch | Any | Kill power | On reboot: tries client, falls back to AP | ❌ Manual only |
+| Network drop during CLIENT | CLIENT mode | Router off | WiFi watchdog: soft reconnect / auto-reboot | ✅ Handled by watchdog |
+| AP mode: no clients connect | AP mode | Wait | Stays in AP mode, no crash | ⬜ Not yet |
+| AP mode: multiple clients | AP mode | Connect 2+ devices | All get DHCP, all see setup | ⬜ Not yet |
 
 ---
 
@@ -436,11 +438,10 @@ password fields with validation.
 
 ### 7.2 Network Selection
 
-**Gap**: The setup page only allows one SSID/PSK pair. If the user has
-multiple networks (e.g., home and office), they can only configure one.
-
-**Not critical for v1**: Single network is fine for MVP. Multiple networks
-can be a future enhancement.
+**Status: IMPLEMENTED** — Both the setup mode captive portal and the main Settings
+page support multiple networks (add, edit, reorder, remove). The `wifi.networks`
+array in `config.json` holds all networks with priority ordering. `wpa_supplicant`
+connects to the highest-priority reachable network automatically.
 
 ### 7.3 WiFi Scan in AP Mode
 

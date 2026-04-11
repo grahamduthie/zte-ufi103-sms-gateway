@@ -147,17 +147,33 @@ shell wrapper that sleeps 30 seconds then invokes `start.sh` via `librank`.
 There is also a legacy `userinit.sh` boot hook (at `/data/local/userinit.sh`)
 that also tries to start `start.sh`. The PID file guard handles this correctly.
 
-**Warning**: After an abrupt disconnect (e.g. pulling the USB cable), the stale
-`gateway.pid` file can prevent the gateway from starting on next boot. Delete
-`/data/sms-gateway/gateway.pid` before rebooting if you encounter this, or use
-the **Shut Down Dongle** button in the web UI for a clean power-off.
+### AP fallback (WiFi setup mode)
+
+If WiFi client mode fails on boot (or `force_ap_mode: true` is set in config),
+`start.sh` runs `wifi-ap-start.sh` then starts `sms-gateway --setup-mode`.
+
+In setup mode, the binary:
+- Starts **only** an HTTP server on `:80` — no `/dev/smd11` session, no SMS/IMAP goroutines
+- Serves a WiFi setup captive portal at `192.168.100.1` (via `SMS-Gateway-Setup` hotspot)
+- Handles OS captive portal probes (`/generate_204`, `/hotspot-detect.html`, `/ncsi.txt`)
+- On "Save & Reboot": writes `config.json` + `wpa_supplicant.conf`, clears `force_ap_mode`, triggers `librank reboot`
+
+The captive portal source is in `cmd/sms-gateway/setup_mode.go` (inline HTML templates).
+The WiFi setup page uses the same PicoCSS styling and Marlow FM branding as the main UI.
+
+**Stale PID file**: After an abrupt kill (e.g. reboot triggered by setup mode),
+the `trap` in `start.sh` may not run, leaving a stale PID. On the next boot,
+`start.sh` validates the stale PID by checking `/proc/$PID/cmdline` for `start.sh`
+before blocking — so reused PIDs from unrelated processes are correctly ignored.
+Use the **Shut Down Dongle** button in the web UI for a clean power-off where possible.
 
 ### Single-instance guard (PID file)
 
 `start.sh` writes its own PID to `gateway.pid` on startup and checks for a
 live process on the next invocation. If a second copy tries to start (from
 init, userinit.sh, manual adb, or any other source), it sees the existing PID
-is alive and exits immediately.
+is alive and exits immediately. The check validates `/proc/$PID/cmdline`
+contains `start.sh` to guard against PID reuse after an abrupt kill.
 
 **Important**: `gateway.pid` is owned by root:root (mode 600) because the init
 service runs as root. It cannot be read from the adb shell (uid=2000) — but the
@@ -299,6 +315,10 @@ CREATE TABLE daemon_health (
 | `/conversation` | GET | **Conversation list** (30/page with pagination) or single thread with chat bubbles |
 | `/compose` | GET/POST | Manual SMS send form |
 | `/settings` | GET/POST | Configuration + Danger Zone (Restart Gateway / Reboot Dongle / Shut Down Dongle) |
+| `/settings/wifi/add` | POST | Add WiFi network; validates SSID + password; writes `wpa_supplicant.conf` |
+| `/settings/wifi/delete` | POST | Remove WiFi network by index; re-numbers priorities |
+| `/settings/wifi/edit` | POST | Update SSID/security/password for existing network (blank password = keep) |
+| `/settings/wifi/move` | POST | Swap network up or down in priority order |
 | `/restarting` | GET | Spinner page — polls `/status`, redirects to `/` when gateway is back |
 | `/status` | GET | JSON health endpoint (auth required) |
 
@@ -318,22 +338,26 @@ GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 \
 ```
 sms-gateway/
 ├── cmd/sms-gateway/
-│   ├── main.go            # Daemon entry point, goroutine setup
+│   ├── main.go            # Daemon entry point, goroutine setup; --setup-mode flag
+│   ├── setup_mode.go      # --setup-mode: captive portal web server (no modem, no goroutines)
 │   ├── android_sms.go     # Fallback: polls mmssms.db (dead code on this device)
 │   ├── housekeeping.go    # Log rotation, WAL checkpoint, record pruning
 │   └── wifi_watchdog.go   # WiFi watchdog: soft reconnects + auto-reboot on driver crash
 ├── internal/
 │   ├── atcmd/session.go   # AT commands, persistent reader, +CMTI/promptCh detection, PDU SMS send
 │   ├── atcmd/pdu.go       # GSM 7-bit PDU encoding
-│   ├── config/config.go   # JSON config loading + validation
+│   ├── config/config.go   # JSON config loading + validation; WiFiConfig with ForceAPMode flag
+│   ├── config/wpa.go      # WriteWPAConf(): generates /data/misc/wifi/wpa_supplicant.conf
 │   ├── database/db.go     # SQLite operations
 │   ├── email/bridge.go    # SMTP forward + IMAP IDLE reply processing
-│   └── web/server.go      # HTTP routes + templates
+│   ├── web/server.go      # HTTP routes + templates; WiFi management handlers
+│   └── web/embed.go       # Embedded static files (StaticFS — exported for setup_mode.go)
 └── scripts/
-    ├── start.sh           # Init service entry point: PID guard + WiFi setup + restart loop
-    ├── wifi-setup.sh      # WiFi AP→client mode switch (dynamic IP via udhcpc.sh)
-    ├── udhcpc.sh          # DHCP event script — configures wlan0 IP/route/DNS
-    └── wifi-client-start.sh  # Manual WiFi switch (dev use)
+    ├── start.sh           # Init service entry point: PID guard + WiFi setup + AP fallback + restart loop
+    ├── wifi-setup.sh      # WiFi AP→client mode switch; reads wpa_supplicant.conf (no hardcoded creds)
+    ├── wifi-ap-start.sh   # WiFi client→AP mode switch: hostapd + dnsmasq + iptables captive portal
+    ├── hostapd-setup.conf # Static hostapd config (SSID: SMS-Gateway-Setup, WPA2)
+    └── udhcpc.sh          # DHCP event script — configures wlan0 IP/route/DNS
 ```
 
 ## Dependencies
@@ -378,4 +402,4 @@ go test ./... -v        # Verbose
 
 ---
 
-*See also: `STATUS.md` (current status), `DEVICE.md` (hardware specs), `BUGS.md` (all bugs and fixes), `SMS_MODEM_ARCHITECTURE.md` (CNMI/QMI SMS routing research), `REFACTOR_PLAN.md` (completed refactoring items), `WIFI_AP_PLAN.md` (planned WiFi AP fallback)*
+*See also: `STATUS.md` (current status), `DEVICE.md` (hardware specs), `BUGS.md` (all bugs and fixes), `SMS_MODEM_ARCHITECTURE.md` (CNMI/QMI SMS routing research), `REFACTOR_PLAN.md` (completed refactoring items), `WIFI_AP_PLAN.md` (WiFi AP fallback — design, implemented 2026-04-11)*

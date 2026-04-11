@@ -599,6 +599,68 @@ On first boot from AP mode, `wpa_supplicant.conf` does not yet exist, so
 
 ---
 
+## Bug 19: WiFi Driver Crash Leaves GUI Unreachable Indefinitely (Fixed — 2026-04-11)
+
+### Symptom
+After the pronto_wlan driver crashes and `wlan0` disappears, the web GUI
+remained unreachable until a manual reboot — potentially many hours.
+
+### Root cause
+The watchdog correctly detected `wlan0` missing and stopped all reconnect
+attempts (to avoid making the driver worse), but then did nothing further.
+There was no automatic recovery path. A manual `adb reboot` was required.
+
+### Investigation
+Research confirmed the Qualcomm WCNSS PRONTO driver bug is a known architectural
+weakness in the Android 4.4-era driver. Key findings:
+
+- **`rmmod`/`insmod` does not work**: The kernel module itself unloads fine
+  (refcount is 0) but `wlan0` does not reappear. The RF subsystem firmware
+  ("iris") is in a corrupt state that only a full hardware power-cycle resets.
+  The vendor kernel (3.10.28) exposes no sysfs reset path — no
+  `wcnss_wlan_state` or `pronto_reset` control node exists.
+- **No patch available**: This is a closed vendor kernel. No upstream fixes,
+  patched driver, or firmware update exists for this device.
+- **Only a full reboot recovers it**, consistently and reliably.
+
+On the day this was diagnosed (2026-04-11), the driver crashed at 19:15 BST
+the previous evening (7 hours into the boot session). The watchdog ran its 5
+soft-reconnect attempts with exponential backoff (19:15–19:38), then gave up.
+The GUI was unreachable for ~13 hours until a manual reboot the next morning.
+
+### Fix
+`wifi_watchdog.go` — when `!wlan0Exists()` is detected after the boot grace
+period, the watchdog now:
+
+1. Logs the detection and waits 30 seconds (avoids false positives during mode
+   switches, which can transiently remove/recreate wlan0)
+2. Re-checks `wlan0Exists()`
+3. If still missing: logs "pronto_wlan driver crashed" and triggers
+   `/system/xbin/librank /system/bin/reboot`
+
+Additionally, after 5 failed soft-reconnect attempts, the watchdog now
+**continues running** (previously it stopped entirely). Soft reconnects are
+suspended to protect the driver, but the existence check keeps firing every
+2 minutes so a subsequent driver crash is still caught.
+
+### Recovery timeline
+- Crash occurs → wlan0 disappears
+- Watchdog detects missing wlan0 on next 2-minute tick (up to 2 min delay)
+- 30-second confirmation wait
+- Reboot triggered; device back up in ~2 minutes
+- **Worst-case GUI downtime: ~4.5 minutes**
+
+### Files changed
+| File | Change |
+|------|--------|
+| `cmd/sms-gateway/wifi_watchdog.go` | `!wlan0Exists()` path: 30s confirm + reboot instead of give-up |
+| `cmd/sms-gateway/wifi_watchdog.go` | Removed early-exit after 5 failures — existence check continues |
+
+### Status
+✅ Fixed — 2026-04-11. New binary deployed same day.
+
+---
+
 ## Feature Notes (not bugs, but non-obvious discoveries)
 
 ### GiffGaff Named Sender Encoding

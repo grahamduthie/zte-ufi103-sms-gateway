@@ -18,7 +18,8 @@ reply processing, and a web UI. No host PC needed after initial setup.
 │  3. IMAP IDLE       → persistent connection, instant delivery     │
 │  4. Signal poller   → AT+CSQ/COPS every 30s (for web UI)         │
 │  5. Web server      → HTTP on :80                                 │
-│  6. WiFi watchdog   → checks wlan0 IP every 45s, soft-reconnects │
+│  6. WiFi watchdog   → checks wlan0 every 2min; soft-reconnects    │
+│                       (max 5 attempts); reboots if driver crashes  │
 │  7. Housekeeping    → hourly log rotation, WAL checkpoint, pruning│
 │                                                                    │
 │  All goroutines have defer recover() + logging                     │
@@ -320,7 +321,7 @@ sms-gateway/
 │   ├── main.go            # Daemon entry point, goroutine setup
 │   ├── android_sms.go     # Fallback: polls mmssms.db (dead code on this device)
 │   ├── housekeeping.go    # Log rotation, WAL checkpoint, record pruning
-│   └── wifi_watchdog.go   # Soft WiFi reconnect (no rmmod/insmod)
+│   └── wifi_watchdog.go   # WiFi watchdog: soft reconnects + auto-reboot on driver crash
 ├── internal/
 │   ├── atcmd/session.go   # AT commands, persistent reader, +CMTI/promptCh detection, PDU SMS send
 │   ├── atcmd/pdu.go       # GSM 7-bit PDU encoding
@@ -357,10 +358,12 @@ sms-gateway/
    that window would be missed permanently (see `SMS_MODEM_ARCHITECTURE.md`)
 5. **mmssms.db always empty** — Qualcomm's telephony replacement doesn't write
    to the standard Android database; `pollAndroidSMS()` is dead code
-6. **WiFi driver instability** — `pronto_wlan.ko` crashes after ~3 wpa_supplicant
-   restarts per boot session. `wlan0` disappears and only a reboot recovers it.
-   The watchdog has been hardened (exponential backoff, failure limit, missing
-   device detection) to avoid making it worse. See Bug 15 in `BUGS.md`.
+6. **WiFi driver instability** — `pronto_wlan.ko` (Qualcomm WCNSS PRONTO) crashes
+   after ~3 `wpa_supplicant` restarts per boot session; `wlan0` disappears and
+   the RF firmware must be power-cycled to recover (rmmod/insmod does not help).
+   The watchdog is hardened (exponential backoff, 5-attempt limit) to avoid
+   accelerating crashes, and now **automatically reboots** the device within
+   ~4.5 minutes of detecting a driver crash. See Bugs 15–19 in `BUGS.md`.
 
 ## Testing
 

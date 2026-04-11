@@ -1,6 +1,6 @@
 # ZTE UFI103 SMS Gateway — Status & Quick Reference
 
-*Last updated: 2026-04-10 18:15 BST*
+*Last updated: 2026-04-11 10:00 BST*
 *Device Serial: 19ce8266*
 
 ---
@@ -16,6 +16,8 @@
 | SMS send | ✅ | Sequential write approach (no intermediate reads) |
 | Web UI | ✅ | **Port 80** with password gate — Dashboard, Received, Sent, Conversations, Compose, Settings |
 | WiFi client | ⚠️ | Multi-network configured, but see "WiFi stability" below |
+| WiFi crash auto-recovery | ✅ | Watchdog reboots device within ~2.5 min of driver crash — GUI recovers automatically |
+| Network hostname | ✅ | DHCP hostname `sms-gateway`; HTTP `Server: SMS-Gateway` header for Angry IP Scanner |
 | Quoted-printable decode | ✅ | Smart quotes → regular apostrophes (multi-byte UTF-8 fixed) |
 | Quote stripping | ✅ | Strips "On ... wrote:" blocks from email replies |
 | SIM auto-unlock | ✅ | Proactive check at start of every SMS poll; SIM PIN lock removed |
@@ -42,7 +44,7 @@
 | Issue | Status | Notes |
 |-------|--------|-------|
 | USB mode cycling on host PC | ⚠️ Known | ModemManager probes `cdc-wdm0` (DIAG interface), triggers firmware USB re-enumeration. Causes periodic init service re-triggers — see WiFi section. |
-| WiFi driver instability | ✅ Mitigated | See below — root causes identified and fixed 2026-04-10 |
+| WiFi driver instability | ✅ Mitigated | Root causes fixed 2026-04-10; auto-reboot on driver crash added 2026-04-11 |
 
 ## WiFi Driver Instability (Mitigated — 2026-04-10)
 
@@ -86,13 +88,26 @@ wpa_supplicant restarts and driver reloads:
    driver reload (rmmod/insmod). Only does rmmod/insmod if wlan0 device is
    completely absent or the soft reconnect fails (e.g. first boot from AP mode).
 
-**Workaround when WiFi drops:**
-```bash
-# If the web UI is unreachable, reboot the dongle:
-adb reboot
-# Wait ~2 minutes for boot + WiFi setup + gateway start.
-# The driver will be fresh and stable again.
-```
+**Automatic crash recovery (added 2026-04-11):**
+
+When the watchdog detects that `wlan0` has disappeared entirely (driver crash),
+it now triggers an automatic system reboot after a 30-second confirmation wait.
+This replaces the previous "give up until manual reboot" behaviour.
+
+- Detection: next 2-minute watchdog tick after crash
+- Confirmation: 30s wait + re-check (avoids false positives during mode switches)
+- Recovery: full reboot → WiFi up → gateway running within ~2 minutes
+- **Worst-case GUI downtime: ~4.5 minutes** (2 min check interval + 30s confirmation + ~2 min boot)
+
+After 5 failed soft-reconnect attempts, the watchdog stops attempting further
+soft reconnects (to avoid accelerating driver destruction) but continues
+monitoring `wlan0` existence — so a subsequent driver crash is still caught
+and triggers the reboot.
+
+**Note on rmmod/insmod**: A driver reload is NOT used as a recovery step.
+Research confirmed the WCNSS PRONTO firmware must be fully power-cycled to
+recover — reloading the kernel module alone does not reset the RF subsystem
+("iris"). Only a full hardware reset (reboot) works. See Bug 19 in BUGS.md.
 
 **Long-term fix options** (not yet implemented):
 - Replace `pronto_wlan.ko` with a newer/patched version if available

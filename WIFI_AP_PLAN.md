@@ -2,12 +2,11 @@
 ## Auto-Healing Connectivity for the ZTE UFI103 SMS Gateway
 
 *Created: 2026-04-05*
+*Revised: 2026-04-11 — single binary approach, save-and-reboot mode switching,
+existing config schema, testing strategy added*
+
 *Trigger: When the dongle boots and can't connect to its saved WiFi network,
 it falls back to AP mode so a user can configure WiFi credentials via a web page.*
-
-**Cross-reference**: This plan implements the "boot persistence" gap described
-in `STATUS.md` Known Issues #3 and `BUGS.md` "Boot Persistence Issue".
-Once implemented, those sections should be updated.
 
 ---
 
@@ -23,443 +22,554 @@ not connected to any computer. In that mode:
    what URL to browse to.
 4. **No display or buttons** — the only user interface is the web GUI.
 
-**Current behaviour**: After boot, the dongle always starts in AP mode (hotspot)
-because Android init launches `hostapd`. The user must run
-`wifi-client-start.sh` (via ADB) to switch to WiFi client mode.
+**Current behaviour**: `start.sh` runs `wifi-setup.sh` on boot, which switches
+to WiFi client mode. If that fails (wrong password, no known network), the
+device is unreachable — no fallback exists.
 
-**Desired behaviour**: The dongle automatically tries WiFi client mode on boot.
-If it can't connect (wrong credentials, no network), it falls back to AP mode
-and serves a WiFi setup page. The user connects their phone/laptop to the
-dongle's hotspot, opens a browser, and configures the WiFi credentials.
+**Desired behaviour**: If client mode fails after a 120-second timeout, the
+dongle falls back to AP mode and serves a WiFi setup page. The user connects
+their phone/laptop to the `SMS-Gateway-Setup` hotspot, is redirected to the
+setup page by a captive portal, configures the WiFi network, and reboots.
+The dongle then boots normally into client mode.
 
 ---
 
 ## Architecture
 
-### Components
+### Single Binary Approach
+
+The existing `sms-gateway` binary is extended with a `--setup-mode` flag.
+There is **no separate wifi-manager binary**. `start.sh` remains the sole
+boot entry point and decides which mode to launch.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  /data/sms-gateway/wifi-manager (Go binary, ~10MB)          │
-│                                                             │
-│  State machine:                                             │
-│  1. BOOT → read config, try WiFi client mode                │
-│  2. CLIENT → wpa_supplicant + DHCP client                   │
-│     ├─ success → start sms-gateway, serve normal web UI     │
-│     └─ timeout (90s) → go to AP mode                        │
-│  3. AP MODE → hostapd + dnsmasq + iptables redirect         │
-│     ├─ serve WiFi setup page at all HTTP URLs               │
-│     ├─ user submits SSID + PSK → save config               │
-│     └─ switch to CLIENT mode (driver reload)                │
-│                                                             │
-│  The existing sms-gateway binary serves the web UI.          │
-│  wifi-manager controls mode switching, WiFi state, and       │
-│  optionally embeds the setup HTML page.                      │
-└─────────────────────────────────────────────────────────────┘
+start.sh (boot entry point, crash-restart loop)
+  │
+  ├─ [existing] PID file guard
+  ├─ [existing] wifi-setup.sh → try client mode with 120s timeout
+  │
+  ├─ WiFi OK? ─── YES ──→ start sms-gateway (normal mode)
+  │                        └─ all goroutines: SMS, IMAP, web UI, watchdog...
+  │
+  └─ WiFi failed? ─ NO ──→ wifi-ap-start.sh → switch to AP mode
+                            └─ start sms-gateway --setup-mode
+                                ├─ web server only (captive portal on :80)
+                                ├─ NO /dev/smd11 session opened
+                                ├─ NO SMS/IMAP/watchdog goroutines
+                                └─ on save + reboot: librank reboot
 ```
 
-### State Machine
+**Why single binary?**
+- The crash-restart loop and PID guard in `start.sh` already work; no need
+  to duplicate process supervision in a second binary
+- In setup mode, sms-gateway simply skips opening `/dev/smd11` and starts
+  fewer goroutines — the code change is small
+- One binary to build, push, and debug
+
+**Why save-and-reboot instead of mid-session mode switching?**
+- The `pronto_wlan.ko` driver can only safely handle ~3 `rmmod`/`insmod` cycles
+  per boot before `wlan0` vanishes permanently (see BUGS.md, Bug 15–19)
+- The WiFi watchdog now auto-reboots when `wlan0` disappears — a mid-session
+  driver reload would race with the watchdog's 30-second confirmation timer
+- Save-and-reboot is simpler and avoids both risks: write config, trigger
+  `librank reboot`, let the next fresh boot handle client mode connection
+
+---
+
+## State Machine
 
 ```
-BOOT
+BOOT (start.sh)
   │
-  ├─ Load config.json → read saved SSID/PSK
+  ├─ Run wifi-setup.sh (AP→CLIENT driver reload, wpa_supplicant, DHCP)
+  │   └─ Wait up to 120 seconds for IPv4 on wlan0
   │
-  ├─ Is WiFi config present and valid?
-  │   ├─ NO  → go to AP MODE immediately
-  │   └─ YES → continue
+  ├─ Got IP? ─── YES ──→ Normal operation
+  │                       sms-gateway (no flags)
+  │                       All goroutines active including WiFi watchdog
   │
-  ├─ Switch to CLIENT mode (reload driver)
-  │   ├─ Write wpa_supplicant.conf
-  │   ├─ Start wpa_supplicant
-  │   ├─ Start DHCP client (udhcpc)
-  │   └─ Wait up to 90 seconds
-  │
-  ├─ Did association + DHCP succeed?
-  │   ├─ YES → Start sms-gateway, serve normal web UI → stay in CLIENT
-  │   └─ NO  → Switch to AP MODE
-  │
-  └─ AP MODE
-      ├─ Start hostapd (from existing /data/misc/wifi/hostapd.conf)
-      ├─ Ensure dnsmasq is running (serves 192.168.100.x)
-      ├─ Set up iptables redirect: all HTTP → 192.168.100.1:8080
-      ├─ Start sms-gateway in "setup mode" (serves WiFi config page)
-      ├─ User submits form → save SSID/PSK to config.json
-      ├─ Show "Reconnecting..." page
-      └─ Go to CLIENT mode (driver reload with new config)
-```
-
-### Mode Switching Protocol
-
-The core challenge: the WiFi driver (`pronto_wlan.ko`) can only operate in
-**one mode at a time**. Switching requires:
-
-```bash
-# CLIENT → AP mode
-kill wpa_supplicant
-brctl delif bridge1 wlan0 2>/dev/null
-ifconfig wlan0 down
-rmmod wlan
-sleep 3
-insmod /system/lib/modules/pronto/pronto_wlan.ko
-sleep 5
-ifconfig wlan0 up
-brctl addif bridge1 wlan0
-brctl addif bridge1 rndis0
-ifconfig bridge1 192.168.100.1 netmask 255.255.255.0 up
-ifconfig rndis0 192.168.100.1 netmask 255.255.255.0 up
-# hostapd auto-starts via Android init or start manually
-dnsmasq --keep-in-foreground --dhcp-range=192.168.100.2,192.168.100.254,3h
-
-# AP → CLIENT mode
-kill dnsmasq (or let it continue for rndis0)
-brctl delif bridge1 wlan0
-brctl delif bridge1 rndis0 2>/dev/null
-ifconfig bridge1 down
-ifconfig wlan0 down
-rmmod wlan
-sleep 3
-insmod /system/lib/modules/pronto/pronto_wlan.ko
-sleep 5
-ifconfig wlan0 up
-# Start wpa_supplicant with new config
-# Start udhcpc
+  └─ No IP? ─────────→ AP Fallback
+                        run wifi-ap-start.sh
+                        sms-gateway --setup-mode
+                        │
+                        ├─ Serve captive portal at 192.168.100.1:80
+                        ├─ dnsmasq: all DNS → 192.168.100.1
+                        ├─ iptables: all :80 → 192.168.100.1:80
+                        ├─ User connects to "SMS-Gateway-Setup" hotspot
+                        ├─ Browser redirected to setup page automatically
+                        ├─ User adds/edits WiFi networks
+                        ├─ Clicks "Save & Reboot"
+                        └─ Gateway writes config → librank reboot
+                            │
+                            └─ BOOT again → wifi-setup.sh tries new network
+                                ├─ Succeeds → Normal operation ✅
+                                └─ Fails → AP Fallback again
 ```
 
 ---
 
 ## Detailed Design
 
-### 1. The WiFi Manager Binary
+### 1. Changes to `start.sh`
 
-A new Go binary (`wifi-manager`) that:
-
-- Is the **only** entry point on boot (replaces `start.sh`)
-- Manages the state machine described above
-- Launches `sms-gateway` as a subprocess (not a separate service)
-- Embeds the WiFi setup HTML page as a Go `embed.FS`
-- Listens on `:8080` in all modes — the handler changes based on state
-
-**Why not extend sms-gateway?** Keeping mode-switching logic separate from the
-gateway means the gateway binary stays focused on SMS/email bridging. The
-wifi-manager can kill/restart the gateway when switching modes.
-
-**Why a subprocess?** The existing sms-gateway opens `/dev/smd11` with a
-persistent reader. If wifi-manager also tries to use the AT commands for
-WiFi setup, there would be contention. The wifi-manager owns the AT session;
-the gateway is started only in CLIENT mode after WiFi is connected.
-
-### 2. WiFi Setup Web Page
-
-**Served at**: ALL HTTP URLs (captive portal via iptables redirect)
-
-**Content**:
-```
-┌─────────────────────────────────────────┐
-│  🔌 4G-UFI-DD78 WiFi Setup              │
-├─────────────────────────────────────────┤
-│                                         │
-│  WiFi Network (SSID):                   │
-│  ┌──────────────────────────────────┐   │
-│  │ YOUR_WIFI_SSID_1                     │   │
-│  └──────────────────────────────────┘   │
-│                                         │
-│  WiFi Password:                         │
-│  ┌──────────────────────────────────┐   │
-│  │ ••••••••                         │   │
-│  └──────────────────────────────────┘   │
-│                                         │
-│  [ Save & Connect ]                     │
-│                                         │
-│  ─── Advanced ───                       │
-│                                         │
-│  AP Name: 4G-UFI-DD78                   │
-│  AP Password: 1234567890                │
-│  Email Server: [IP/hostname]            │
-│  Email Port: [993/587]                  │
-│  Email User: [username]                 │
-│  Email Pass: [password]                 │
-│  Forward To: [email]                    │
-│  SIM PIN: [8837] (or leave blank)       │
-│                                         │
-│  [ Save All Settings ]                  │
-└─────────────────────────────────────────┘
-```
-
-**Behaviour on submit**:
-1. Validate SSID (non-empty, ≤32 chars) and PSK (≥8 chars)
-2. Write `/data/sms-gateway/config.json` with new WiFi credentials
-3. Write `/data/misc/wifi/wpa_supplicant.conf`
-4. Return "Reconnecting..." page with meta-refresh every 5s
-5. Kill gateway → switch to CLIENT mode → restart gateway
-
-### 3. Captive Portal (iptables redirect)
-
-When in AP mode, all HTTP traffic from connected clients is redirected to
-the setup page:
+The WiFi section is extended with a 120-second timeout and an AP fallback:
 
 ```bash
-# Redirect all port 80 traffic to the gateway's web server
-iptables -t nat -A PREROUTING -i wlan0 -p tcp --dport 80 -j DNAT \
-    --to-destination 192.168.100.1:8080
-iptables -t nat -A PREROUTING -i wlan0 -p tcp --dport 443 -j DNAT \
-    --to-destination 192.168.100.1:8080
+# ── WiFi setup ───────────────────────────────────────────────────────────────
 
-# Allow the gateway's own traffic
-iptables -t nat -A POSTROUTING -o rndis0 -j MASQUERADE
+# Attempt WiFi client mode. wifi-setup.sh does the driver reload (AP→CLIENT),
+# starts wpa_supplicant, and runs udhcpc. It exits 0 on success, non-zero if
+# DHCP fails within its internal timeout.
+#
+# We give it 120 seconds total (driver load ~10s, wpa_supplicant association
+# ~30s, DHCP ~10s — observed boot takes 90-120s in practice).
+
+if busybox timeout 120 sh $GW_DIR/scripts/wifi-setup.sh >> "$LOG" 2>&1; then
+    echo "[$(date)] start.sh: WiFi client mode OK" >> "$LOG"
+    WIFI_MODE=client
+else
+    echo "[$(date)] start.sh: WiFi client failed — falling back to AP mode" >> "$LOG"
+    sh $GW_DIR/scripts/wifi-ap-start.sh >> "$LOG" 2>&1
+    WIFI_MODE=ap
+fi
+
+# ── Launch gateway ────────────────────────────────────────────────────────────
+
+if [ "$WIFI_MODE" = "ap" ]; then
+    exec /system/xbin/librank /system/bin/sh -c \
+        "$GW_BIN --config $CONFIG --setup-mode >> $LOG 2>&1"
+else
+    exec /system/xbin/librank /system/bin/sh -c \
+        "$GW_BIN --config $CONFIG >> $LOG 2>&1"
+fi
 ```
 
-**DNS handling**: dnsmasq resolves all domains to `192.168.100.1`. This
-triggers the captive portal detection on iOS/Android/Windows.
+### 2. New `wifi-ap-start.sh`
+
+Reverses `wifi-setup.sh`: tears down client mode and brings up AP mode with
+hostapd + dnsmasq + iptables captive portal rules.
 
 ```bash
+#!/system/bin/sh
+# wifi-ap-start.sh — switch wlan0 to AP (hostapd) mode for WiFi setup portal
+set -e
+
+GW_DIR=/data/sms-gateway
+
+# ── Tear down client mode ─────────────────────────────────────────────────────
+busybox killall wpa_supplicant 2>/dev/null || true
+busybox sleep 2
+
+# ── Driver reload (CLIENT → AP) ───────────────────────────────────────────────
+busybox ifconfig wlan0 down 2>/dev/null || true
+rmmod wlan 2>/dev/null || true
+busybox sleep 3
+insmod /system/lib/modules/pronto/pronto_wlan.ko
+busybox sleep 5
+
+# ── Bridge setup ─────────────────────────────────────────────────────────────
+brctl addbr bridge1 2>/dev/null || true
+brctl addif bridge1 wlan0 2>/dev/null || true
+brctl addif bridge1 rndis0 2>/dev/null || true
+busybox ifconfig bridge1 192.168.100.1 netmask 255.255.255.0 up
+busybox ifconfig rndis0 192.168.100.1 netmask 255.255.255.0 up
+
+# ── hostapd ───────────────────────────────────────────────────────────────────
+# hostapd.conf is generated at runtime with SSID from config (see gateway)
+/system/bin/hostapd -e /data/misc/wifi/entropy.bin \
+    $GW_DIR/scripts/hostapd-setup.conf -B
+
+busybox sleep 2
+
+# ── dnsmasq: DHCP + wildcard DNS redirect (captive portal) ───────────────────
+busybox killall dnsmasq 2>/dev/null || true
+busybox sleep 1
 dnsmasq \
+    --keep-in-foreground \
     --interface=bridge1 \
-    --dhcp-range=192.168.100.2,192.168.100.254,3h \
+    --dhcp-range=192.168.100.2,192.168.100.254,1h \
     --address=/#/192.168.100.1 \
     --no-resolv \
-    --no-hosts
+    --no-hosts \
+    --pid-file=/data/sms-gateway/dnsmasq.pid \
+    --log-facility=/dev/null &
+
+# ── iptables: captive portal redirect ────────────────────────────────────────
+iptables -t nat -F PREROUTING 2>/dev/null || true
+iptables -t nat -A PREROUTING -i wlan0 -p tcp --dport 80 \
+    -j DNAT --to-destination 192.168.100.1:80
+iptables -t nat -A PREROUTING -i wlan0 -p tcp --dport 443 \
+    -j DNAT --to-destination 192.168.100.1:80
+
+echo "[$(date)] wifi-ap-start.sh: AP mode ready at 192.168.100.1"
 ```
 
-**How clients discover the page**:
-- **iOS/Android**: Detect captive portal by fetching a known URL (e.g.,
-  `captive.apple.com`). Gets redirected to `192.168.100.1:8080`, opens
-  the setup page automatically.
-- **Desktop browsers**: User types any URL → gets redirected → sees setup.
-- **Manual**: `http://192.168.100.1:8080/` always works.
+### 3. `hostapd-setup.conf`
 
-### 4. Configuration Storage
+Generated at runtime (or pre-written) with the setup SSID:
 
-The existing `config.json` is extended:
+```
+interface=wlan0
+driver=nl80211
+ssid=SMS-Gateway-Setup
+channel=6
+hw_mode=g
+wpa=2
+wpa_passphrase=smsgateway
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+```
 
-```json
-{
-    "wifi": {
-        "mode": "client",
-        "client": {
-            "ssid": "YOUR_WIFI_SSID_1",
-            "psk": "YOUR_WIFI_PASSWORD"
-        },
-        "ap": {
-            "ssid": "4G-UFI-DD78",
-            "psk": "1234567890"
-        }
-    },
-    "sms": { ... },
-    "email": { ... },
-    "authorised_senders": ["your-email@example.com"],
-    "database": "/data/sms-gateway/sms.db",
-    "log_file": "/data/sms-gateway/sms-gateway.log",
-    "web": { "listen_addr": "0.0.0.0:8080" }
+The SSID is always `SMS-Gateway-Setup`. The password `smsgateway` is fixed
+(users just need to find and connect to this network — it's a setup network,
+not a security boundary). Both are hardcoded; there's no reason to make them
+configurable.
+
+### 4. `sms-gateway --setup-mode`
+
+When started with `--setup-mode`, the gateway:
+
+- **Does not open `/dev/smd11`** — no AT session, no modem interaction
+- **Does not start**: SMS poller, send queue, IMAP IDLE, WiFi watchdog, SIM
+  keepalive, balance checker, signal poller, or housekeeping
+- **Does start**: a minimal web server on `:80` serving only the setup UI
+
+The setup web server handles:
+
+| Route | Purpose |
+|-------|---------|
+| `GET /` | Redirect to `/setup` (captive portal entry) |
+| `GET /setup` | WiFi setup page |
+| `POST /setup` | Save new network config, trigger reboot |
+| `GET /generate_204` | Android captive portal detection — returns 204 |
+| `GET /hotspot-detect.html` | iOS captive portal detection — redirect to `/setup` |
+| `GET /ncsi.txt` | Windows captive portal detection — redirect to `/setup` |
+| `GET /connectivity-check.gstatic.com` | Additional Android probe |
+
+### 5. WiFi Setup Page
+
+The setup page uses the existing PicoCSS styling and Marlow FM branding:
+
+```
+┌──────────────────────────────────────────┐
+│  [Marlow FM logo]  SMS Gateway WiFi Setup │
+├──────────────────────────────────────────┤
+│                                          │
+│  The gateway could not connect to any    │
+│  saved WiFi network. Add one below.      │
+│                                          │
+│  ── Saved Networks ──────────────────    │
+│  • MyHomeWifi [priority 1]  [Remove]     │
+│  • OldNetwork  [priority 2]  [Remove]    │
+│                                          │
+│  ── Add Network ─────────────────────    │
+│  WiFi Name (SSID):                       │
+│  [________________________]              │
+│                                          │
+│  Password:                               │
+│  [________________________] [👁]         │
+│                                          │
+│  Security: [WPA2 ▾]                      │
+│                                          │
+│  [Add Network]                           │
+│                                          │
+│  ─────────────────────────────────────   │
+│  [Save & Reboot]                         │
+│                                          │
+│  The dongle will reboot and attempt to   │
+│  connect. This takes ~2 minutes.         │
+└──────────────────────────────────────────┘
+```
+
+**Behaviour on "Save & Reboot":**
+1. Validate: at least one network with non-empty SSID and password ≥ 8 chars
+2. Write updated `wifi.networks` array to `config.json`
+3. Re-generate `/data/misc/wifi/wpa_supplicant.conf` from the new network list
+4. Return a "Rebooting..." page with Marlow FM branding (same as existing
+   `/restarting` page)
+5. Trigger `exec.Command("/system/xbin/librank", "/system/bin/reboot").Run()`
+
+### 6. Config Schema
+
+Uses the **existing** `WiFiConfig` struct — no changes to `config.go`:
+
+```go
+type WiFiConfig struct {
+    Mode     string       `json:"mode"`      // "client" or "ap" (informational)
+    Networks []WiFiNetCfg `json:"networks"`  // existing multi-network array
+}
+
+type WiFiNetCfg struct {
+    SSID     string `json:"ssid"`
+    Password string `json:"password"`
+    Security string `json:"security"`  // "WPA2", "WPA", "open"
+    Priority int    `json:"priority"`
 }
 ```
 
-**New fields** (with defaults):
-- `wifi.mode` — `"client"` or `"ap"` (auto-set by wifi-manager)
-- `wifi.client.ssid` — saved WiFi network
-- `wifi.client.psk` — saved WiFi password
-- `wifi.ap.ssid` — hotspot name (derived from MAC: `4G-UFI-XXXX`)
-- `wifi.ap.psk` — hotspot password (default: `1234567890`)
+The setup page populates and saves this array directly. `wifi-setup.sh`
+generates `wpa_supplicant.conf` from `config.json` at boot (already partly
+does this — will need extending to read from `wifi.networks`).
 
-### 5. Boot Flow
+### 7. `force_ap_mode` Config Flag
 
-The `start.sh` script is replaced by `wifi-manager`:
+A `wifi.force_ap_mode` boolean flag is added to `WiFiConfig` for testing:
 
-```
-/data/local/userinit.sh (if it works) or debuggerd wrapper
-  → /data/sms-gateway/scripts/wifi-manager-start.sh
-    → /data/sms-gateway/wifi-manager --config /data/sms-gateway/config.json
-      → wifi-manager decides: CLIENT or AP mode
-        → CLIENT: start sms-gateway subprocess, serve normal UI
-        → AP: serve WiFi setup page, wait for user input
+```go
+type WiFiConfig struct {
+    Mode        string       `json:"mode"`
+    Networks    []WiFiNetCfg `json:"networks"`
+    ForceAPMode bool         `json:"force_ap_mode"` // testing only
+}
 ```
 
-**wifi-manager-start.sh**:
-```bash
-#!/system/bin/sh
-# Waits for modem, rotates logs, launches wifi-manager
-sleep 30
-exec /data/sms-gateway/wifi-manager --config /data/sms-gateway/config.json \
-    >> /data/sms-gateway/sms-gateway.log 2>&1
-```
+When `force_ap_mode: true`, `start.sh` skips the WiFi client attempt entirely
+and goes straight to AP mode. This is the primary mechanism for testing the
+AP fallback at a location with a known WiFi network (see Testing section).
+The flag is cleared automatically after the gateway writes new WiFi config
+during setup (so a subsequent reboot goes into normal client mode).
 
 ---
 
-## Potential Issues & Challenges
+## Captive Portal Mechanics
 
-### Issue 1: hostapd is an Android Service
+### How mobile devices detect captive portals
 
-**Problem**: Android init launches `hostapd` automatically via `init.qcom.rc`.
-It's also a kernel thread `[hostapd]` that cannot be killed — only `rmmod wlan`
-kills it.
+When a device connects to a new WiFi network, the OS makes probe requests
+to well-known URLs:
 
-**Impact**: In CLIENT mode, Android's hostapd is still "running" as a dead
-kernel thread. When we reload the driver in AP mode, Android init may not
-restart it automatically.
+| OS | Probe URL | Expected response |
+|----|-----------|-------------------|
+| Android | `http://connectivitycheck.gstatic.com/generate_204` | HTTP 204 No Content |
+| Android (alt) | `http://clients3.google.com/generate_204` | HTTP 204 No Content |
+| iOS | `http://captive.apple.com/hotspot-detect.html` | Specific HTML body |
+| Windows | `http://www.msftconnecttest.com/ncsi.txt` | Text `"Microsoft NCSI"` |
 
-**Mitigation**: wifi-manager manually starts `hostapd` in AP mode:
-```bash
-/system/bin/hostapd -e /data/misc/wifi/entropy.bin \
-    /data/misc/wifi/hostapd.conf -B
-```
+When our gateway **doesn't** return the expected response (because dnsmasq
+resolves these domains to `192.168.100.1` and we redirect to `/setup`), the
+OS detects a captive portal and pops up a browser window automatically.
 
-### Issue 2: dnsmasq is Also an Android Service
+The gateway in setup mode handles these probe URLs specifically:
+- `GET /generate_204` → returns HTTP **200 with redirect** to `/setup`
+  (not 204 — that would tell the OS the portal is already authenticated)
+- All other GET requests → redirect to `http://192.168.100.1/setup`
 
-**Problem**: `dnsmasq` runs as a system service for the AP's DHCP. If we kill
-it in CLIENT mode, it won't auto-restart in AP mode.
+### Why iptables redirect is needed
 
-**Impact**: AP mode won't hand out DHCP addresses to clients.
+Without iptables, clients browsing to `http://google.com` would get a DNS
+response of `192.168.100.1` (from dnsmasq wildcard), but the HTTP Host header
+would say `google.com`. Our web server handles this by ignoring the Host header
+and always serving the setup page.
 
-**Mitigation**: wifi-manager manually manages dnsmasq:
-- CLIENT mode: kill dnsmasq (not needed — udhcpc handles DHCP client)
-- AP mode: start dnsmasq manually with explicit args
+The iptables DNAT ensures even HTTPS attempts on port 443 get redirected to
+our HTTP setup page (the connection won't validate TLS — the browser shows a
+certificate error briefly, then the OS captive portal handler takes over).
 
-### Issue 3: Driver Reload Takes 10-15 Seconds
+---
 
-**Problem**: `rmmod wlan` + `insmod pronto_wlan.ko` + firmware load takes
-~10 seconds. During this time, no WiFi at all.
+## Potential Issues
 
-**Impact**: User experience gap when switching modes.
+### Issue 1: rmmod/insmod during AP fallback
 
-**Mitigation**: The "Reconnecting..." page with auto-refresh handles this
-gracefully. In practice, the switch happens rarely (only after config change
-or boot failure).
+The AP fallback path does one driver reload (CLIENT → AP). This is the same
+reload that `wifi-setup.sh` already does at every boot (AP → CLIENT). So the
+total reload count per boot session is always exactly 1 — well within the
+pronto driver's safety margin.
 
-### Issue 4: SIM PIN on Boot
+The watchdog does not run in setup mode, so there is no race condition with
+the 30-second auto-reboot trigger.
 
-**Problem**: Now that we've removed the SIM PIN lock (`AT+CLCK="SC",0,"8837"`),
-this is no longer an issue. But if the SIM is re-locked (rare), the gateway
-needs to unlock it.
+### Issue 2: hostapd/dnsmasq may already be running
 
-**Status**: Resolved. The SIM PIN is permanently disabled.
+Android init starts `hostapd` and `dnsmasq` as system services. `wifi-ap-start.sh`
+kills any existing instances before starting its own. Since we're doing a
+driver reload anyway, `hostapd` (which is a kernel thread on this device when
+the wlan module is loaded) is killed by `rmmod wlan`.
 
-### Issue 5: AP SSID Uniqueness
+### Issue 3: rndis0 USB access during AP mode
 
-**Problem**: The default AP name is `4G-UFI-` + last 4 chars of MAC. If the
-user moves to an environment where another device uses the same name, there's
-a conflict.
+The USB RNDIS interface (`rndis0`, `192.168.100.1`) continues to work in AP
+mode. A user with a USB cable and `sudo ip addr add 192.168.100.2/24 dev
+enxXXXX` on their PC can reach the setup page at `http://192.168.100.1/` even
+without connecting to the WiFi hotspot. Useful for recovery if the hotspot
+doesn't work.
 
-**Mitigation**: The setup page allows the user to change the AP SSID. The
-default is auto-generated from the MAC address.
+### Issue 4: 120s timeout false positives
 
-### Issue 6: Bridge Configuration
+If the router is slow (rebooting, firmware update), `wifi-setup.sh` may time
+out even though the credentials are correct. The device falls into AP mode
+unnecessarily. The user connects to `SMS-Gateway-Setup`, sees the saved
+networks are correct, and can hit "Save & Reboot" without changing anything.
+The second boot succeeds. This is acceptable behaviour.
 
-**Problem**: In AP mode, `wlan0` and `rndis0` must be bridged for USB tethering
-to work while also serving the hotspot. The bridge (`bridge1`) must have an IP.
+### Issue 5: No internet in AP mode
 
-**Mitigation**:
-```bash
-brctl addbr bridge1 2>/dev/null
-brctl addif bridge1 wlan0
-brctl addif bridge1 rndis0
-ifconfig bridge1 192.168.100.1 netmask 255.255.255.0 up
-```
-The gateway web server listens on `0.0.0.0:8080`, so it's reachable via
-`bridge1` (AP hotspot) and `rndis0` (USB) simultaneously.
-
-### Issue 7: iptables State Persistence
-
-**Problem**: iptables rules are not persisted across reboots. If the device
-crashes while in AP mode with captive portal rules, it reboots into the
-default state.
-
-**Mitigation**: wifi-manager sets up iptables rules at startup based on the
-current mode. Rules are always transient — wifi-manager manages them.
-
-### Issue 8: No DNS Resolution in AP Mode
-
-**Problem**: In AP mode, the dongle has no internet, so DNS queries from
-clients will fail. Captive portal detection on mobile devices relies on DNS
-redirecting to a local page.
-
-**Mitigation**: dnsmasq `--address=/#/192.168.100.1` resolves ALL domains to
-the local gateway. Combined with iptables port redirect, any HTTP request
-lands on the setup page.
-
-### Issue 9: Config Validation
-
-**Problem**: User might enter invalid SSID/PSK or break the email config via
-the setup page.
-
-**Mitigation**:
-- Client-side JS validates form fields before submission
-- Server-side validation rejects invalid configs
-- Previous working config is kept as fallback
-- If new config causes connection failure, the device falls back to AP mode
-  automatically on next boot
-
-### Issue 10: Memory Budget
-
-**Problem**: The device has 512MB RAM. Running hostapd + dnsmasq + wifi-manager
-+ sms-gateway + Android framework simultaneously may exceed budget.
-
-**Analysis**:
-- Android framework + zygote: ~200MB
-- hostapd: ~5MB
-- dnsmasq: ~2MB
-- wifi-manager: ~10MB
-- sms-gateway: ~15MB
-- Total: ~232MB → well within 512MB budget
-
-**Status**: Safe. The device runs all of these in CLIENT mode already (Android
-keeps hostapd as a kernel thread).
+The dongle in AP mode has 4G data (modem is always running independently of
+WiFi), but client devices connected to `SMS-Gateway-Setup` will not get
+internet access — only the setup page. This is intentional and expected for
+a captive portal setup flow.
 
 ---
 
 ## Implementation Plan
 
-### Phase 1: WiFi Manager Core (Week 1)
+### Phase 1: `sms-gateway --setup-mode` (core)
 
-**Goal**: wifi-manager binary boots, manages mode switching, starts gateway.
+| Step | Task |
+|------|------|
+| 1.1 | Add `--setup-mode` flag to `main.go`; skip AT session + all goroutines except web server |
+| 1.2 | Add setup-mode route handler in `internal/web/server.go` (or a minimal separate handler) |
+| 1.3 | Write `setup.html` template — WiFi network list, add form, Save & Reboot button |
+| 1.4 | Implement `POST /setup` — validate, write `config.json` + `wpa_supplicant.conf`, reboot |
+| 1.5 | Add captive portal probe handlers (`/generate_204`, `/hotspot-detect.html`, `/ncsi.txt`) |
+| 1.6 | Add `force_ap_mode` to `WiFiConfig` struct |
 
-| Step | Task | Details |
-|------|------|---------|
-| 1.1 | New Go module | `internal/wifimgr/` package |
-| 1.2 | Config extension | Add `WiFiConfig` struct to `config/config.go` |
-| 1.3 | Mode detector | Read config, check for valid SSID/PSK |
-| 1.4 | CLIENT switch | Shell out to `wifi-client-start.sh` logic |
-| 1.5 | AP switch | Shell out to new `wifi-ap-start.sh` logic |
-| 1.6 | DHCP wait | Poll `udhcpc` result with 90s timeout |
-| 1.7 | Gateway launcher | Start/stop sms-gateway as subprocess |
+### Phase 2: AP mode infrastructure
 
-### Phase 2: AP Mode Infrastructure (Week 2)
+| Step | Task |
+|------|------|
+| 2.1 | Write `wifi-ap-start.sh` (driver reload, hostapd, dnsmasq, iptables) |
+| 2.2 | Write `hostapd-setup.conf` with `SMS-Gateway-Setup` SSID + fixed password |
+| 2.3 | Extend `wifi-setup.sh` to read `wifi.networks` from `config.json` and generate `wpa_supplicant.conf` |
+| 2.4 | Add 120-second timeout to WiFi client attempt in `start.sh` |
+| 2.5 | Add AP fallback branch to `start.sh` |
 
-**Goal**: AP mode works — clients can connect, get DHCP, reach setup page.
+### Phase 3: Integration
 
-| Step | Task | Details |
-|------|------|---------|
-| 2.1 | `wifi-ap-start.sh` | Reverse of client script |
-| 2.2 | hostapd launch | Manual `hostapd -B` with generated config |
-| 2.3 | dnsmasq launch | Manual with `--address=/#/192.168.100.1` |
-| 2.4 | iptables rules | NAT redirect for captive portal |
-| 2.5 | Bridge setup | bridge1 with wlan0 + rndis0 |
-| 2.6 | AP SSID generation | `4G-UFI-` + last 4 of MAC |
+| Step | Task |
+|------|------|
+| 3.1 | End-to-end test with `force_ap_mode: true` (see Testing section) |
+| 3.2 | Test wrong-password path (real failure) |
+| 3.3 | Test captive portal on iOS, Android, desktop |
+| 3.4 | Test that normal SMS operation resumes after AP → reboot → client |
+| 3.5 | Deploy and update docs |
 
-### Phase 3: Web Setup UI (Week 2)
+---
 
-**Goal**: User can configure WiFi credentials via browser.
+## Testing Strategy
 
-| Step | Task | Details |
-|------|------|---------|
-| 3.1 | Setup HTML page | Embedded via Go `embed.FS` |
-| 3.2 | Config API endpoint | POST `/api/wifi-config` handler |
-| 3.3 | Server-side validation | Reject empty/bad SSID/PSK |
-| 3.4 | wpa_supplicant.conf write | On config save |
-| 3.5 | Reconnect page | "Switching to client mode..." with auto-refresh |
-| 3.6 | Advanced settings page | Email, AP name, authorised senders |
+The primary challenge: the `NETGEAR_24ng` network is always visible during
+development, so the device will always connect successfully and never trigger
+AP fallback naturally. The following approaches test each part of the flow
+independently before requiring a real "no known WiFi" environment.
 
-### Phase 4: Integration & Testing (Week 3)
+### Level 1 — Force AP mode flag (safest, most repeatable)
 
-**Goal**: End-to-end flow works on device.
+Set `"force_ap_mode": true` in `/data/sms-gateway/config.json`:
 
-| Step | Task | Details |
-|------|------|---------|
-| 4.1 | Boot flow integration | Replace start.sh, update userinit.sh |
-| 4.2 | CLIENT → AP fallback | Test with wrong SSID |
-| 4.3 | AP → CLIENT switch | Test saving new credentials |
-| 4.4 | Captive portal detection | Test on iOS/Android/desktop |
-| 4.5 | SMS gateway in CLIENT | Verify SMS flow after reconnect |
-| 4.6 | Error handling | Bad config, driver failure, SMSC issues |
+```bash
+# On device via adb (requires root):
+adb shell "/system/xbin/librank /system/bin/sh -c \
+  'cat /data/sms-gateway/config.json | \
+   busybox sed \"s/\\\"wifi\\\": {/\\\"wifi\\\": {\\n    \\\"force_ap_mode\\\": true,/\" \
+   > /data/sms-gateway/config.json.new && \
+   mv /data/sms-gateway/config.json.new /data/sms-gateway/config.json'"
+
+# Easier: edit on host, push
+# Edit config.json locally, add "force_ap_mode": true to wifi section
+adb push config.json /data/sms-gateway/config.json
+adb reboot
+```
+
+**What this tests**:
+- AP mode starts correctly (`SMS-Gateway-Setup` hotspot visible)
+- Captive portal works (connect phone, browser opens setup page automatically)
+- Setup page renders correctly with existing saved networks
+- "Add Network" form saves to config correctly
+- "Save & Reboot" triggers reboot (flag is cleared by the save handler)
+- Device boots into client mode on next reboot
+
+**Restore normal operation**: The save handler clears `force_ap_mode` before
+rebooting, so the device returns to normal automatically after a successful
+save + reboot cycle.
+
+### Level 2 — Wrong password test (tests the real timeout path)
+
+Edit `wpa_supplicant.conf` on the device to use a wrong password for
+`NETGEAR_24ng`, then reboot:
+
+```bash
+# Save current config
+adb pull /data/misc/wifi/wpa_supplicant.conf wpa_supplicant.conf.bak
+
+# Edit: change NETGEAR_24ng psk to something wrong
+# Push modified version
+adb push wpa_supplicant_wrong.conf /data/misc/wifi/wpa_supplicant.conf
+adb reboot
+```
+
+**What this tests**:
+- `wifi-setup.sh` times out after 120s when credentials are wrong
+- `start.sh` correctly detects the failure and falls back to AP mode
+- Full end-to-end flow including the actual 120s wait
+
+**Restore**: After test, user adds NETGEAR_24ng back via the setup page (or
+restore from backup via adb).
+
+**Note**: This test takes ~2 minutes for the timeout to expire on each boot.
+Use Level 1 for iterating on the UI; use Level 2 only for validating the
+full timeout path.
+
+### Level 3 — Remove all saved networks (tests missing config path)
+
+Edit `config.json` so `wifi.networks` is an empty array. `wifi-setup.sh`
+generates a `wpa_supplicant.conf` with no networks, wpa_supplicant fails to
+associate immediately, and the timeout fires quickly (no 120s wait — it fails
+fast when there are no configured networks).
+
+**What this tests**: The "no WiFi config at all" first-boot scenario.
+
+### Level 4 — Component testing (no reboots needed)
+
+Test individual pieces without rebooting by running them manually via adb:
+
+```bash
+# Test AP mode infrastructure only (no sms-gateway involved)
+adb shell "/system/xbin/librank sh /data/sms-gateway/scripts/wifi-ap-start.sh"
+# → Verify: SMS-Gateway-Setup hotspot appears on phone
+# → Verify: phone gets 192.168.100.x IP from dnsmasq
+# → Verify: browser on phone gets redirected to setup page
+
+# Test setup-mode gateway only (AP already running from above)
+adb shell "/system/xbin/librank /data/sms-gateway/sms-gateway \
+  --config /data/sms-gateway/config.json --setup-mode &"
+# → Verify: http://192.168.100.1/ shows setup page
+# → Verify: captive portal probes work (curl tests from phone)
+
+# Restore: kill setup-mode gateway, run wifi-setup.sh normally
+adb shell "/system/xbin/librank sh /data/sms-gateway/scripts/wifi-setup.sh"
+```
+
+### Level 5 — Pre-deployment validation at unknown location
+
+Before deploying to Marlow FM (or any new location), the full flow must be
+validated with no known network available. Use a phone hotspot that is NOT
+in the saved networks:
+
+1. Turn off `NETGEAR_24ng` router (or move dongle away from it)
+2. Ensure only an unknown hotspot is in range
+3. Reboot dongle
+4. Confirm `SMS-Gateway-Setup` appears within 3 minutes
+5. Connect phone to `SMS-Gateway-Setup` (password: `smsgateway`)
+6. Confirm captive portal page opens automatically
+7. Add the test hotspot credentials
+8. Click "Save & Reboot"
+9. Confirm dongle connects to test hotspot and web UI is accessible
+10. Confirm SMS→email flow works (send test text, verify email received)
+
+### Test Matrix
+
+| Scenario | Level | Expected outcome |
+|----------|-------|-----------------|
+| `force_ap_mode: true`, reboot | 1 | AP hotspot up, captive portal works |
+| Save new network via setup page | 1 | Config written, device reboots, connects |
+| Wrong password for saved network | 2 | 120s timeout, AP fallback, setup page |
+| No saved networks at all | 3 | Immediate failure, AP fallback |
+| iOS captive portal detection | 4 | Setup page opens automatically in Safari |
+| Android captive portal detection | 4 | Setup page opens in system browser |
+| Windows captive portal detection | 4 | Notification bar → setup page |
+| SMS flow after AP → reboot → client | 4/5 | Text received, forwarded to email |
+| ADB USB access during AP mode | 4 | Setup page at 192.168.100.1 via RNDIS |
 
 ---
 
@@ -468,70 +578,48 @@ keeps hostapd as a kernel thread).
 ### New Files
 ```
 sms-gateway/
-├── cmd/wifi-manager/
-│   └── main.go              # WiFi manager entry point
-├── internal/wifimgr/
-│   ├── manager.go           # State machine, mode switching
-│   ├── client_mode.go       # CLIENT mode setup (wpa_supplicant + DHCP)
-│   ├── ap_mode.go           # AP mode setup (hostapd + dnsmasq + iptables)
-│   ├── captive.go           # Captive portal web handler + embedded HTML
-│   └── subprocess.go        # Launch/stop sms-gateway
+├── cmd/sms-gateway/setup_mode.go    # --setup-mode: web server only, no modem
+├── internal/web/
+│   └── templates/setup.html         # WiFi setup page template
 └── scripts/
-    ├── wifi-manager-start.sh # Boot wrapper (replaces start.sh)
-    └── wifi-ap-start.sh     # AP mode network setup
+    ├── wifi-ap-start.sh              # AP mode network setup
+    └── hostapd-setup.conf            # Static hostapd config for setup SSID
 ```
 
 ### Modified Files
 ```
 sms-gateway/
-├── internal/config/config.go  # Add WiFiConfig struct
-├── scripts/start.sh           # Replace: call wifi-manager instead
-sms-gateway/go.mod             # No new deps (uses stdlib for exec/shell)
+├── cmd/sms-gateway/main.go          # Add --setup-mode flag, skip goroutines
+├── internal/config/config.go        # Add ForceAPMode bool to WiFiConfig
+├── internal/web/server.go           # Add /setup, /generate_204 etc. routes
+└── scripts/
+    ├── start.sh                      # Add 120s timeout, AP fallback branch
+    └── wifi-setup.sh                 # Read wifi.networks from config.json
 ```
 
-### Device Files (pushed by deploy)
-```
-/data/sms-gateway/
-├── wifi-manager               # New binary
-├── scripts/wifi-manager-start.sh  # New boot script
-├── config.json                # Extended with wifi section
-/data/misc/wifi/
-├── wpa_supplicant.conf        # Written by setup page
-├── hostapd.conf               # Modified with dynamic SSID/PSK
-/system/bin/debuggerd          # Wrapper (already in place)
-```
-
----
-
-## What This Does NOT Change
-
-- **The sms-gateway binary** — unchanged, still handles SMS/email bridging
-- **The AT command session** — unchanged, still persistent reader on /dev/smd11
-- **The SQLite database** — unchanged schema
-- **The IMAP IDLE implementation** — unchanged, still persistent connection
-- **The SIM PIN lock** — already permanently removed (not a config option)
-- **The existing web UI templates** — unchanged; setup page is a separate route
+### What Does NOT Change
+- The `sms-gateway` normal-mode flow — identical to current
+- AT command session, SMS poller, IMAP IDLE — unchanged
+- SQLite schema — unchanged
+- Existing web UI templates — unchanged
+- The WiFi watchdog auto-reboot — still runs in normal mode; not started in setup mode
 
 ---
 
 ## Success Criteria
 
 1. **Boot with valid WiFi config** → dongle connects to WiFi, gateway starts,
-   web UI available at DHCP-assigned IP within 60 seconds.
-2. **Boot with invalid/missing WiFi config** → dongle creates AP hotspot within
-   45 seconds. User connects phone, opens browser, is redirected to setup page.
-3. **User saves new SSID/PSK** → dongle switches to CLIENT mode, connects,
-   gateway starts, SMS flow resumes.
-4. **Network drops while in CLIENT mode** → gateway keeps running (IMAP IDLE
-   reconnects automatically). If modem dies, circuit breaker backs off.
-5. **User changes WiFi password on router** → next boot fails → dongle falls
-   back to AP mode → user updates credentials → reconnects.
+   web UI available at DHCP-assigned IP within 2 minutes.
+2. **Boot with invalid/missing WiFi config** → dongle creates `SMS-Gateway-Setup`
+   hotspot within 3 minutes. User connects phone, browser opens setup page.
+3. **User saves new SSID/PSK** → dongle reboots, connects to new network,
+   SMS flow resumes. `force_ap_mode` is cleared automatically.
+4. **Network drops while in CLIENT mode** → existing WiFi watchdog handles it
+   (soft reconnect → auto-reboot if driver crashes). AP fallback is not involved.
+5. **force_ap_mode test** → matches Level 1 test matrix exactly.
 
 ---
 
 *See also: `STATUS.md` (current status), `GATEWAY.md` (architecture),
-`BUGS.md` (known issues), `REFACTOR_PLAN.md` (completed refactoring items),
-`DEVICE.md` (hardware specs, WiFi mode switch procedure),
-`WIFI_AP_TEST_PLAN.md` (WiFi AP test plan),
-`FULL_PROJECT_TEST_PLAN.md` (comprehensive test plan — 103 tests passing),
-`DOCUMENTATION_PLAN.md` (documentation roadmap)*
+`BUGS.md` (WiFi driver issues — Bugs 15–19), `DEVICE.md` (hardware specs,
+WiFi mode switch procedure)*

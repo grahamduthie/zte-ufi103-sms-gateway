@@ -51,9 +51,8 @@ type WiFiNetCfg struct {
 }
 
 type WebConfig struct {
-	ListenAddr           string `json:"listen_addr"`
-	AdminPassword        string `json:"admin_password"`
-	ScheduledRebootTime  string `json:"scheduled_reboot_time"` // "HH:MM" UK time, empty = disabled
+	ListenAddr    string `json:"listen_addr"`
+	AdminPassword string `json:"admin_password"`
 }
 
 func DefaultConfig() *Config {

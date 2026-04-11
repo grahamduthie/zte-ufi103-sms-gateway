@@ -1,25 +1,26 @@
 package main
 
-// wifi_watchdog.go — monitors wlan0 connectivity and performs soft reconnects
-// when the WiFi drops (as happens periodically with wpa_supplicant on this
-// Qualcomm WCNSS PRONTO driver).
+// wifi_watchdog.go — monitors wlan0 connectivity and recovers from WiFi failures.
 //
-// Strategy: every 2 minutes check if wlan0 has an IP. If not:
-//   1. Kill stale wpa_supplicant.
-//   2. Bring wlan0 up.
-//   3. Start a fresh wpa_supplicant (background).
-//   4. Run udhcpc to get a new DHCP lease.
+// Two distinct failure modes handled differently:
 //
-// Safety measures to prevent driver instability:
-//   - Boot grace period: first 3 minutes after boot, no checks at all.
-//   - Exponential backoff: each failed reconnect doubles the wait (up to 30 min).
-//   - Hard limit: after 5 consecutive failed reconnects, stop trying entirely.
-//   - wlan0 missing: if the device node is gone, stop trying (only reboot fixes it).
+//   1. wlan0 exists but has no IP (wpa_supplicant lost association):
+//      → Attempt a soft reconnect (kill stale wpa_supplicant, start fresh, DHCP).
+//      → Exponential backoff, max 5 attempts, then stop soft reconnects.
+//      → Soft reconnects are capped because repeated wpa_supplicant kill+restart
+//        cycles on the Qualcomm WCNSS PRONTO driver accelerate its demise.
 //
-// We deliberately do NOT do rmmod/insmod here — multiple driver reload cycles
-// put the pronto_wlan driver into an unrecoverable state (documented in
-// DEVICE.md). A soft reconnect (wpa_supplicant restart only) is safe to repeat
-// only when done sparingly.
+//   2. wlan0 device node disappears entirely (pronto_wlan.ko driver crash):
+//      → The WCNSS firmware enters a corrupt state that cannot be recovered
+//        without a hardware reset. rmmod/insmod does not help — the RF
+//        subsystem ("iris") remains in a bad state regardless.
+//      → After a 30-second confirmation wait (to avoid false positives during
+//        boot or mode switches), trigger a full system reboot.
+//      → Typical recovery time: ~2 min (detection + reboot + boot + WiFi setup).
+//
+// Note: we deliberately do NOT do rmmod/insmod here — multiple driver reload
+// cycles put the pronto_wlan driver into an unrecoverable state even faster.
+// Reboot is the only reliable fix once the driver has crashed.
 
 import (
 	"bytes"
@@ -32,11 +33,12 @@ import (
 )
 
 const (
-	wifiCheckInterval    = 120 * time.Second  // check every 2 minutes
-	wifiBootGrace        = 3 * time.Minute    // don't check at all for 3 min after boot
-	wifiMaxFailures      = 5                  // stop trying after this many consecutive failures
-	wifiBackoffBase      = 60 * time.Second   // base backoff after a failed reconnect
-	wifiBackoffMax       = 30 * time.Minute   // maximum backoff between attempts
+	wifiCheckInterval    = 120 * time.Second // check every 2 minutes
+	wifiBootGrace        = 3 * time.Minute   // don't check at all for 3 min after boot
+	wifiMaxFailures      = 5                 // stop soft-reconnect attempts after this many consecutive failures
+	wifiBackoffBase      = 60 * time.Second  // base backoff after a failed reconnect
+	wifiBackoffMax       = 30 * time.Minute  // maximum backoff between attempts
+	wifiDeadConfirmWait  = 30 * time.Second  // wait before confirming driver is truly dead
 	wpaStartupWait       = 15 * time.Second
 	wpaSupplicantBin     = "/system/bin/wpa_supplicant"
 	wpaSupplicantConf    = "/data/misc/wifi/wpa_supplicant.conf"
@@ -46,7 +48,8 @@ const (
 )
 
 // runWiFiWatchdog runs until ctx is cancelled, periodically checking that
-// wlan0 has an IP and attempting a soft reconnect if it doesn't.
+// wlan0 has an IP and attempting a soft reconnect if it doesn't. If the
+// driver crashes entirely (wlan0 device disappears), triggers a system reboot.
 func runWiFiWatchdog(ctx context.Context, logger *log.Logger) {
 	t := time.NewTicker(wifiCheckInterval)
 	defer t.Stop()
@@ -82,20 +85,24 @@ func runWiFiWatchdog(ctx context.Context, logger *log.Logger) {
 			}
 		}
 
-		// If we've hit the hard failure limit, stop trying entirely.
-		if consecutiveFailures >= wifiMaxFailures {
-			continue
-		}
-
-		// If we're still backing off from a recent failure, skip.
-		if !nextAttemptAt.IsZero() && time.Now().Before(nextAttemptAt) {
-			continue
-		}
-
-		// wlan0 device is completely gone — only a reboot fixes this.
+		// wlan0 device is completely gone — the pronto_wlan.ko driver has crashed.
+		// Confirm after a short wait (avoids false positives during mode switches),
+		// then reboot. This is the only reliable recovery for this hardware.
 		if !wlan0Exists() {
-			logger.Printf("WiFi watchdog: wlan0 device missing — only a reboot can fix this")
-			consecutiveFailures = wifiMaxFailures // stop trying
+			logger.Printf("WiFi watchdog: wlan0 device missing — waiting %s to confirm before rebooting", wifiDeadConfirmWait)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wifiDeadConfirmWait):
+			}
+			if !wlan0Exists() {
+				logger.Printf("WiFi watchdog: wlan0 still missing — pronto_wlan driver crashed, rebooting to recover")
+				exec.Command("/system/xbin/librank", "/system/bin/reboot").Run()
+				// Block until reboot takes effect; if it fails for any reason, stop watchdog.
+				time.Sleep(60 * time.Second)
+				return
+			}
+			logger.Printf("WiFi watchdog: wlan0 reappeared during confirmation window — not rebooting")
 			continue
 		}
 
@@ -106,7 +113,21 @@ func runWiFiWatchdog(ctx context.Context, logger *log.Logger) {
 			continue
 		}
 
-		// wlan0 has no IP — attempt a soft reconnect.
+		// wlan0 exists but has no IP.
+
+		// If we've exhausted soft-reconnect attempts, keep monitoring but don't
+		// attempt any more reconnects (further attempts risk destroying the driver).
+		// The existence check above will catch it if the driver subsequently crashes.
+		if consecutiveFailures >= wifiMaxFailures {
+			continue
+		}
+
+		// If we're still backing off from a recent failure, skip.
+		if !nextAttemptAt.IsZero() && time.Now().Before(nextAttemptAt) {
+			continue
+		}
+
+		// Attempt a soft reconnect.
 		consecutiveFailures++
 		logger.Printf("WiFi watchdog: wlan0 has no IP — attempting soft reconnect (attempt %d/%d)",
 			consecutiveFailures, wifiMaxFailures)
@@ -121,7 +142,7 @@ func runWiFiWatchdog(ctx context.Context, logger *log.Logger) {
 			logger.Printf("WiFi watchdog: next attempt in %v", backoff.Truncate(time.Second))
 
 			if consecutiveFailures >= wifiMaxFailures {
-				logger.Printf("WiFi watchdog: %d consecutive failures — giving up until reboot", wifiMaxFailures)
+				logger.Printf("WiFi watchdog: %d consecutive soft-reconnect failures — suspending reconnect attempts (driver crash detection still active)", wifiMaxFailures)
 			}
 		} else {
 			logger.Printf("WiFi watchdog: wlan0 reconnected successfully")

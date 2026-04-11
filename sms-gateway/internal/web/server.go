@@ -506,8 +506,6 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	fmt.Sscanf(r.FormValue("sms_poll_interval"), "%d", &s.cfg.SMS.PollIntervalSec)
 	fmt.Sscanf(r.FormValue("sms_max_reply_chars"), "%d", &s.cfg.SMSMaxReplyChars)
 
-	s.cfg.Web.ScheduledRebootTime = strings.TrimSpace(r.FormValue("scheduled_reboot_time"))
-
 	// Persist to disk.
 	if s.configPath != "" {
 		if err := config.Save(s.configPath, s.cfg); err != nil {

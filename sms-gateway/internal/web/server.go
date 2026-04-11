@@ -270,7 +270,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		"Monthly":   monthly,
 		"LastRx":    lastRx,
 		"LastTx":    lastTx,
-		"Uptime":    int(time.Since(s.startedAt).Seconds()),
+		"Uptime":    formatUptime(time.Since(s.startedAt)),
 	}
 	if err := s.tmpl.ExecuteTemplate(w, "dashboard.html", data); err != nil {
 		http.Error(w, "Template error: "+err.Error(), http.StatusInternalServerError)
@@ -750,4 +750,22 @@ func (s *Server) handleRestarting(w http.ResponseWriter, r *http.Request) {
 </html>`
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, restartingHTML)
+}
+
+func formatUptime(d time.Duration) string {
+	total := int(d.Seconds())
+	days := total / 86400
+	hours := (total % 86400) / 3600
+	mins := (total % 3600) / 60
+	secs := total % 60
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm %ds", days, hours, mins, secs)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm %ds", hours, mins, secs)
+	}
+	if mins > 0 {
+		return fmt.Sprintf("%dm %ds", mins, secs)
+	}
+	return fmt.Sprintf("%ds", secs)
 }

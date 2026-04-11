@@ -1,6 +1,6 @@
 # ZTE UFI103 SMS Gateway — Status & Quick Reference
 
-*Last updated: 2026-04-11 12:30 BST*
+*Last updated: 2026-04-11 (uptime display)*
 *Device Serial: 19ce8266*
 
 ---
@@ -30,7 +30,7 @@
 | Single-instance guard | ✅ | PID file in `start.sh` prevents duplicate gateway processes; stale-PID detection via `/proc/$PID/cmdline` (added 2026-04-11) |
 | Log housekeeping | ✅ | Hourly rotation at 10 MB, WAL checkpoint, 90-day record pruning |
 | Conversation pagination | ✅ | 30 per page with indexes on `(sender, received_at)` and `(to_number, created_at)` |
-| Dashboard | ✅ | Monthly counts, last sent/received (UK time), gateway status, uptime |
+| Dashboard | ✅ | Monthly counts, last sent/received (UK time), gateway status, uptime (Days/Hours/Minutes/Seconds) |
 | Settings controls | ✅ | Save config, Restart Gateway, Reboot Dongle, Shut Down Dongle |
 | WiFi management UI | ✅ | Add, edit, reorder (↑/↓), and remove networks from Settings page; writes `wpa_supplicant.conf` immediately (2026-04-11) |
 | WiFi AP fallback | ✅ | On boot failure: `wifi-ap-start.sh` → `sms-gateway --setup-mode` captive portal on `SMS-Gateway-Setup` hotspot; `force_ap_mode` flag for testing (2026-04-11) |

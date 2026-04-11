@@ -309,7 +309,7 @@ CREATE TABLE daemon_health (
 |-------|--------|---------|
 | `/login` | POST | Password gate (see `web.admin_password` in config.json) |
 | `/logout` | POST | Clear auth cookie |
-| `/` | GET | Dashboard — monthly counts, last sent/received (UK time), gateway status, uptime, recent messages |
+| `/` | GET | Dashboard — monthly counts, last sent/received (UK time), gateway status, uptime (Xd Xh Xm Xs format), recent messages |
 | `/inbox` | GET | Paginated received SMS (20/page) — now labelled "Received" |
 | `/sent` | GET | Paginated sent SMS (50/page) |
 | `/conversation` | GET | **Conversation list** (30/page with pagination) or single thread with chat bubbles |

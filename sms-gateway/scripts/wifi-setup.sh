@@ -1,31 +1,19 @@
 #!/system/bin/sh
 # wifi-setup.sh — switches the dongle from AP mode to WiFi client mode.
 #
-# Handles steps 1-9 of the mode switch: driver reload, wpa_supplicant,
+# Handles the mode switch: driver reload, wpa_supplicant start,
 # DHCP (dynamic IP via udhcpc.sh). Does NOT start the SMS gateway.
 #
-# Called by: start.sh (on boot) and wifi-client-start.sh (manual).
-# Run via: /system/xbin/librank /system/bin/sh /data/sms-gateway/scripts/wifi-setup.sh
+# WiFi credentials are in /data/misc/wifi/wpa_supplicant.conf.
+# That file is written by the gateway (from config.json) before this
+# script is called. Do not hardcode credentials here.
 #
-# WiFi credentials — edit here or deploy a new script via adb push.
-# These will eventually be read from config.json by the WiFi AP manager.
-# Multiple networks are supported — wpa_supplicant will try them in priority order.
-
-# Primary network
-WIFI_SSID="YOUR_WIFI_SSID_1"
-WIFI_PSK="YOUR_WIFI_PASSWORD"
-
-# Secondary network
-WIFI_SSID_2="YOUR_WIFI_SSID_2"
-WIFI_PSK_2="YOUR_WIFI_PASSWORD"
-
-# Tertiary network
-WIFI_SSID_3="YOUR_WIFI_SSID_3"
-WIFI_PSK_3="YOUR_WIFI_PASSWORD_3"
+# Called by: start.sh (on boot, after AP fallback check).
+# Run via: /system/xbin/librank /system/bin/sh /data/sms-gateway/scripts/wifi-setup.sh
 
 GW_DIR=/data/sms-gateway
 
-echo "[wifi-setup] Switching to client mode, SSID: $WIFI_SSID"
+echo "[wifi-setup] Switching to client mode"
 
 # ── Step 1: Kill AP-mode services ─────────────────────────────────────────────
 # dnsmasq can be killed; hostapd is a kernel thread (cannot be killed directly)
@@ -45,32 +33,7 @@ sleep 3
 insmod /system/lib/modules/pronto/pronto_wlan.ko
 sleep 5
 
-# ── Step 4: Write wpa_supplicant config ───────────────────────────────────────
-busybox cat > /data/misc/wifi/wpa_supplicant.conf << EOF
-ctrl_interface=/data/misc/wifi/sockets
-update_config=1
-ap_scan=1
-network={
-    ssid="${WIFI_SSID}"
-    psk="${WIFI_PSK}"
-    key_mgmt=WPA-PSK
-    priority=1
-}
-network={
-    ssid="${WIFI_SSID_2}"
-    psk="${WIFI_PSK_2}"
-    key_mgmt=WPA-PSK
-    priority=2
-}
-network={
-    ssid="${WIFI_SSID_3}"
-    psk="${WIFI_PSK_3}"
-    key_mgmt=WPA-PSK
-    priority=3
-}
-EOF
-
-# ── Step 5: Start wpa_supplicant ─────────────────────────────────────────────
+# ── Step 4: Start wpa_supplicant ─────────────────────────────────────────────
 ifconfig wlan0 up
 sleep 2
 busybox rm -f /data/misc/wifi/sockets/wlan0
@@ -79,7 +42,7 @@ busybox rm -f /data/misc/wifi/sockets/wlan0
     -O /data/misc/wifi/sockets -B
 sleep 10
 
-# ── Step 6: DHCP with dynamic IP ─────────────────────────────────────────────
+# ── Step 5: DHCP with dynamic IP ─────────────────────────────────────────────
 # udhcpc.sh sets the IP, route, and DNS when the lease is bound.
 busybox udhcpc -i wlan0 -q -n \
     -s $GW_DIR/scripts/udhcpc.sh \
@@ -94,7 +57,7 @@ else
     echo "[wifi-setup] DHCP ok — wlan0: $WLAN_IP"
 fi
 
-# ── Step 7: Restore rndis0 for USB/ADB access ────────────────────────────────
+# ── Step 6: Restore rndis0 for USB/ADB access ────────────────────────────────
 ifconfig rndis0 192.168.100.1 netmask 255.255.255.0 up
 
 echo "[wifi-setup] Done."

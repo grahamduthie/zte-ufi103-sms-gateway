@@ -28,6 +28,7 @@ const maxSendAttempts = 50
 
 func main() {
 	configPath := flag.String("config", "/data/sms-gateway/config.json", "Path to config file")
+	setupMode := flag.Bool("setup-mode", false, "Run captive portal WiFi setup (no modem, no SMS)")
 	testMode := flag.Bool("test", false, "Run connectivity tests and exit")
 	testEmail := flag.Bool("test-email", false, "Test email connectivity and exit")
 	testCount := flag.Bool("test-count", false, "Test GetSMSCount and exit")
@@ -48,6 +49,12 @@ func main() {
 	if err != nil {
 		logger.Printf("Config not found at %s, using defaults", *configPath)
 		cfg = config.DefaultConfig()
+	}
+
+	// Setup mode: captive portal WiFi config UI — no modem, no email, no DB needed.
+	if *setupMode {
+		runSetupMode(cfg, *configPath, logger)
+		return
 	}
 
 	// Validate config

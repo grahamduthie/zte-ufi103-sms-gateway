@@ -39,8 +39,9 @@ type EmailConfig struct {
 }
 
 type WiFiConfig struct {
-	Mode     string      `json:"mode"`
-	Networks []WiFiNetCfg `json:"networks"`
+	Mode        string       `json:"mode"`
+	Networks    []WiFiNetCfg `json:"networks"`
+	ForceAPMode bool         `json:"force_ap_mode"` // set true to test AP fallback; cleared after use by start.sh
 }
 
 type WiFiNetCfg struct {

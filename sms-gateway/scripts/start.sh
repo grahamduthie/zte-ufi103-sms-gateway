@@ -16,18 +16,26 @@ GW_DIR=/data/sms-gateway
 GW_BIN=$GW_DIR/sms-gateway
 LOG=$GW_DIR/sms-gateway.log
 PIDFILE=$GW_DIR/gateway.pid
+CONFIG_JSON=$GW_DIR/config.json
 
 # ── 0. Exclusive lock ─────────────────────────────────────────────────────────
-# PID file guard: prevents two copies of start.sh running simultaneously,
-# regardless of how the second copy is launched.
-# We check whether the recorded PID is still alive (kill -0 does not send a
-# signal; it just tests whether the process exists). If the old PID is gone
-# (crash/kill/reboot), we replace the PID file and continue normally.
+# PID file guard: prevents two copies of start.sh running simultaneously.
+# We check whether the recorded PID is still alive AND that it's actually our
+# start.sh (not an unrelated process that got the same PID after a reboot).
+# This protects against the case where a reboot kills start.sh without running
+# the trap cleanup — the stale PID may be reused by an unrelated process on
+# the next boot, which would incorrectly block the gateway from starting.
 if [ -f "$PIDFILE" ]; then
     OLD_PID=$(busybox cat "$PIDFILE" 2>/dev/null)
     if [ -n "$OLD_PID" ] && busybox kill -0 "$OLD_PID" 2>/dev/null; then
-        echo "[$(date)] start.sh: already running (PID $OLD_PID) — exiting" >> "$LOG"
-        exit 1
+        # Verify the process is actually start.sh, not a PID-reuse collision.
+        CMDLINE=$(busybox cat /proc/$OLD_PID/cmdline 2>/dev/null | busybox tr '\000' ' ')
+        if echo "$CMDLINE" | busybox grep -q 'start.sh'; then
+            echo "[$(date)] start.sh: already running (PID $OLD_PID) — exiting" >> "$LOG"
+            exit 1
+        fi
+        # PID reuse: stale PID file — proceed and overwrite.
+        echo "[$(date)] start.sh: stale PID file (PID $OLD_PID is not start.sh) — clearing" >> "$LOG"
     fi
 fi
 echo $$ > "$PIDFILE"
@@ -40,19 +48,22 @@ trap "busybox rm -f '$PIDFILE'" EXIT INT TERM HUP
 sleep 5
 
 # ── 2. WiFi client mode ───────────────────────────────────────────────────────
-# Three cases:
-#   a) wlan0 has an IP  → already in client mode, skip everything.
-#   b) wlan0 exists but no IP → soft reconnect (restart wpa_supplicant + DHCP).
-#      This handles Android cgroup teardown killing wpa_supplicant when the init
-#      service is restarted. Avoids an unnecessary rmmod/insmod which wears out
-#      the pronto_wlan driver over time.
-#   c) wlan0 missing → full wifi-setup (first boot AP→client switch, driver crash).
-#      Also falls through here if the soft reconnect fails (e.g. first boot,
-#      AP mode still active, or wpa_supplicant.conf not yet written).
-if busybox ifconfig wlan0 2>/dev/null | busybox grep -q 'inet addr'; then
+# Check force_ap_mode in config.json. When set to true, skip WiFi client setup
+# entirely and go straight to AP mode. Used for testing the AP fallback.
+FORCE_AP=$(busybox grep -o '"force_ap_mode"[[:space:]]*:[[:space:]]*true' "$CONFIG_JSON" 2>/dev/null)
+SETUP_MODE=0
+
+if [ -n "$FORCE_AP" ]; then
+    echo "[$(date)] start.sh: force_ap_mode set in config — going straight to AP mode" >> "$LOG"
+    SETUP_MODE=1
+elif busybox ifconfig wlan0 2>/dev/null | busybox grep -q 'inet addr'; then
+    # a) wlan0 already has an IP — already in client mode, skip everything.
     echo "[$(date)] start.sh: WiFi already in client mode, skipping setup" >> "$LOG"
 elif [ -d /sys/class/net/wlan0 ]; then
-    # wlan0 exists but no IP — try a soft reconnect before resorting to rmmod/insmod.
+    # b) wlan0 exists but no IP — try a soft reconnect before resorting to rmmod/insmod.
+    #    This handles Android cgroup teardown killing wpa_supplicant when the init
+    #    service is restarted. Avoids an unnecessary rmmod/insmod which wears out
+    #    the pronto_wlan driver over time.
     echo "[$(date)] start.sh: wlan0 has no IP, trying soft reconnect..." >> "$LOG"
     busybox killall wpa_supplicant 2>/dev/null
     sleep 2
@@ -69,15 +80,31 @@ elif [ -d /sys/class/net/wlan0 ]; then
     if busybox ifconfig wlan0 2>/dev/null | busybox grep -q 'inet addr'; then
         echo "[$(date)] start.sh: soft reconnect succeeded" >> "$LOG"
     else
-        # Soft reconnect failed (AP mode active, no wpa_supplicant.conf, or other
-        # reason). Fall back to full wifi-setup with driver reload.
+        # Soft reconnect failed. Fall back to full wifi-setup with driver reload.
         echo "[$(date)] start.sh: soft reconnect failed — running full wifi-setup..." >> "$LOG"
         /system/bin/sh $GW_DIR/scripts/wifi-setup.sh >> "$LOG" 2>&1
     fi
 else
-    # wlan0 device missing entirely — need a full driver reload.
+    # c) wlan0 device missing — need a full driver reload (AP mode active, or
+    #    first boot, or wpa_supplicant.conf not yet written).
     echo "[$(date)] start.sh: wlan0 missing — running full wifi-setup..." >> "$LOG"
     /system/bin/sh $GW_DIR/scripts/wifi-setup.sh >> "$LOG" 2>&1
+fi
+
+# Check if WiFi client mode succeeded (only when not already in AP mode).
+# If wlan0 still has no IP after all setup attempts, fall back to AP mode.
+if [ $SETUP_MODE -eq 0 ]; then
+    if busybox ifconfig wlan0 2>/dev/null | busybox grep -q 'inet addr'; then
+        echo "[$(date)] start.sh: WiFi client mode OK" >> "$LOG"
+    else
+        echo "[$(date)] start.sh: WiFi client failed — falling back to AP mode" >> "$LOG"
+        SETUP_MODE=1
+    fi
+fi
+
+# Start AP infrastructure if needed (driver reload, hostapd, dnsmasq, iptables).
+if [ $SETUP_MODE -eq 1 ]; then
+    /system/bin/sh $GW_DIR/scripts/wifi-ap-start.sh >> "$LOG" 2>&1
 fi
 
 # ── 3. Log rotation ───────────────────────────────────────────────────────────
@@ -98,9 +125,18 @@ iptables -t nat -D oem_nat_pre -p tcp -d 192.168.100.1 --dport 80 -j DNAT --to-d
 # The gateway runs in the foreground. If it exits for any reason, we restart it
 # after a 10s delay. Because this script is the init service's main process
 # (not a background child), init never tears down the cgroup on us.
+# In setup mode, sms-gateway --setup-mode runs instead (captive portal only,
+# no modem). It exits only if there's an unexpected error; the reboot triggered
+# by "Save & Reboot" kills the process cleanly before the device restarts.
 while true; do
-    echo "[$(date)] start.sh: starting sms-gateway" >> "$LOG"
-    "$GW_BIN" >> "$LOG" 2>&1
-    echo "[$(date)] start.sh: sms-gateway exited ($?), restarting in 10s" >> "$LOG"
+    if [ $SETUP_MODE -eq 1 ]; then
+        echo "[$(date)] start.sh: starting sms-gateway --setup-mode" >> "$LOG"
+        "$GW_BIN" --setup-mode >> "$LOG" 2>&1
+        echo "[$(date)] start.sh: sms-gateway --setup-mode exited ($?), restarting in 10s" >> "$LOG"
+    else
+        echo "[$(date)] start.sh: starting sms-gateway" >> "$LOG"
+        "$GW_BIN" >> "$LOG" 2>&1
+        echo "[$(date)] start.sh: sms-gateway exited ($?), restarting in 10s" >> "$LOG"
+    fi
     sleep 10
 done

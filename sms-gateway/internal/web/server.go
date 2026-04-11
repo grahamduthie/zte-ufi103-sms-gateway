@@ -56,7 +56,7 @@ func (s *Server) setupHandler() {
 	mux.HandleFunc("/restarting", s.handleRestarting)
 	mux.HandleFunc("/status", s.requireAuth(s.handleStatus))
 
-	staticSub, _ := fs.Sub(staticFS, "static")
+	staticSub, _ := fs.Sub(StaticFS, "static")
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 
 	s.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -190,7 +190,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/status", s.requireAuth(s.handleStatus))
 
 	// Static files
-	staticSub, _ := fs.Sub(staticFS, "static")
+	staticSub, _ := fs.Sub(StaticFS, "static")
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

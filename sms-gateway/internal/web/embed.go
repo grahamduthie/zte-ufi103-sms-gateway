@@ -9,7 +9,8 @@ import (
 var embedded embed.FS
 
 //go:embed static/*
-var staticFS embed.FS
+// StaticFS holds the embedded static files (CSS, logo). Exported for setup mode.
+var StaticFS embed.FS
 
 func init() {
 	// Ensure the embedded filesystem is valid

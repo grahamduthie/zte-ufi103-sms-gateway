@@ -661,6 +661,50 @@ suspended to protect the driver, but the existence check keeps firing every
 
 ---
 
+## Bug 20: Dashboard Flashes "Not Registered / No Operator" When SMS Arrives (Fixed — 2026-04-11)
+
+### Symptom
+Immediately after receiving a text message, the dashboard briefly showed the
+gateway as "not registered" with no operator name. The display recovered on the
+next 30-second signal poll.
+
+### Root cause
+`GetNetworkInfo()` in `internal/atcmd/session.go` always started with a blank
+`NetworkInfo{}` struct and **unconditionally wrote it to the cache at the end**,
+regardless of whether each AT command succeeded.
+
+The failure sequence:
+1. SMS arrives → SMS poller holds the AT mutex (`AT+CMGL`, `AT+CMGD`, SMTP forward)
+2. 30-second signal poll fires concurrently and calls `GetNetworkInfo()`
+3. `AT+CREG?` response is garbled by RILD noise from the ongoing SMS processing
+   → regex fails to match → `Registered` stays `false`
+4. `AT+COPS?` likewise → `Operator` stays `""`
+5. Cache overwritten with blank state → dashboard shows "not registered, no operator"
+6. Next 30-second poll succeeds cleanly → display recovers
+
+The signal bars appeared fine throughout because `GetSignal()` (`AT+CSQ`) is a
+simpler command less susceptible to the same RILD interference window.
+
+### Fix
+`GetNetworkInfo()` now seeds `info` from the **current cached values** before
+sending any AT commands. Each field is only updated when the corresponding
+command succeeds *and* the response parses cleanly. Transient failures (timeout,
+garbled response, RILD noise) leave the previously-known-good state intact.
+
+A genuine deregistration (`+CREG: 0` parsing cleanly) still updates the cache
+correctly — this only suppresses updates where the command failed or the
+response was unparseable.
+
+### Files changed
+| File | Change |
+|------|--------|
+| `internal/atcmd/session.go` | `GetNetworkInfo()`: seed from cache; only update fields on clean parse |
+
+### Status
+✅ Fixed — 2026-04-11. New binary deployed same day.
+
+---
+
 ## Feature Notes (not bugs, but non-obvious discoveries)
 
 ### GiffGaff Named Sender Encoding

@@ -872,8 +872,17 @@ func (s *Session) CachedSignal() SignalInfo {
 }
 
 // GetNetworkInfo returns registration and operator info and updates the cache.
+// Each field is only updated when the corresponding AT command succeeds and
+// returns a parseable response. Transient failures (RILD noise, timeouts,
+// garbled responses) leave the previous cached value intact so the dashboard
+// does not show a spurious "not registered / no operator" flash.
 func (s *Session) GetNetworkInfo() (NetworkInfo, error) {
-	info := NetworkInfo{}
+	// Seed from the current cache so partial failures preserve known-good state.
+	s.cacheMu.RLock()
+	info := s.cachedNetwork
+	s.cacheMu.RUnlock()
+
+	var firstErr error
 
 	out, err := s.sendCommand("AT+CREG?", 3*time.Second)
 	if err == nil {
@@ -884,6 +893,9 @@ func (s *Session) GetNetworkInfo() (NetworkInfo, error) {
 			info.Registered = code == 1 || code == 5
 			info.Roaming = code == 5
 		}
+		// If the response didn't parse, keep the previous Registered/Roaming values.
+	} else {
+		firstErr = err
 	}
 
 	out, err = s.sendCommand("AT+COPS?", 5*time.Second)
@@ -894,6 +906,9 @@ func (s *Session) GetNetworkInfo() (NetworkInfo, error) {
 		if m != nil {
 			info.Operator = m[1]
 		}
+		// If the response didn't parse (e.g. modem still searching), keep old operator.
+	} else if firstErr == nil {
+		firstErr = err
 	}
 
 	out, err = s.sendCommand("AT+CIMI", 3*time.Second)
@@ -905,12 +920,14 @@ func (s *Session) GetNetworkInfo() (NetworkInfo, error) {
 				break
 			}
 		}
+	} else if firstErr == nil {
+		firstErr = err
 	}
 
 	s.cacheMu.Lock()
 	s.cachedNetwork = info
 	s.cacheMu.Unlock()
-	return info, nil
+	return info, firstErr
 }
 
 // CachedNetworkInfo returns the last known network info without taking the AT mutex.

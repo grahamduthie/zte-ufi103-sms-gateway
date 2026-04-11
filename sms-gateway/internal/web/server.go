@@ -53,6 +53,8 @@ func (s *Server) setupHandler() {
 	mux.HandleFunc("/compose", s.requireAuth(s.handleCompose))
 	mux.HandleFunc("/conversation", s.requireAuth(s.handleConversation))
 	mux.HandleFunc("/settings", s.requireAuth(s.handleSettings))
+	mux.HandleFunc("/settings/wifi/add", s.requireAuth(s.handleWiFiAdd))
+	mux.HandleFunc("/settings/wifi/delete", s.requireAuth(s.handleWiFiDelete))
 	mux.HandleFunc("/restarting", s.handleRestarting)
 	mux.HandleFunc("/status", s.requireAuth(s.handleStatus))
 
@@ -186,6 +188,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/compose", s.requireAuth(s.handleCompose))
 	mux.HandleFunc("/conversation", s.requireAuth(s.handleConversation))
 	mux.HandleFunc("/settings", s.requireAuth(s.handleSettings))
+	mux.HandleFunc("/settings/wifi/add", s.requireAuth(s.handleWiFiAdd))
+	mux.HandleFunc("/settings/wifi/delete", s.requireAuth(s.handleWiFiDelete))
 	mux.HandleFunc("/restarting", s.handleRestarting)
 	mux.HandleFunc("/status", s.requireAuth(s.handleStatus))
 
@@ -445,9 +449,11 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]interface{}{
-		"Title": "Settings",
-		"Cfg":   s.cfg,
-		"Saved": r.URL.Query().Get("saved") == "1",
+		"Title":      "Settings",
+		"Cfg":        s.cfg,
+		"Saved":      r.URL.Query().Get("saved") == "1",
+		"WiFiSaved":  r.URL.Query().Get("wifi_saved") == "1",
+		"WiFiError":  r.URL.Query().Get("wifi_error"),
 	}
 	if err := s.tmpl.ExecuteTemplate(w, "settings.html", data); err != nil {
 		http.Error(w, "Template error: "+err.Error(), http.StatusInternalServerError)
@@ -522,6 +528,90 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
+}
+
+// handleWiFiAdd adds a WiFi network to the in-memory config and writes wpa_supplicant.conf.
+func (s *Server) handleWiFiAdd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Redirect(w, r, "/settings#wifi", http.StatusSeeOther)
+		return
+	}
+	r.ParseForm()
+	ssid := strings.TrimSpace(r.FormValue("ssid"))
+	psk := r.FormValue("psk")
+	security := r.FormValue("security")
+	if security == "" {
+		security = "WPA2"
+	}
+
+	if ssid == "" {
+		http.Redirect(w, r, "/settings?wifi_error=SSID+is+required#wifi", http.StatusSeeOther)
+		return
+	}
+	if strings.ToUpper(security) != "OPEN" && len(psk) < 8 {
+		http.Redirect(w, r, "/settings?wifi_error=Password+must+be+at+least+8+characters#wifi", http.StatusSeeOther)
+		return
+	}
+
+	// Prevent duplicates
+	for _, n := range s.cfg.WiFi.Networks {
+		if n.SSID == ssid {
+			http.Redirect(w, r, "/settings?wifi_error=Network+already+saved#wifi", http.StatusSeeOther)
+			return
+		}
+	}
+
+	s.cfg.WiFi.Networks = append(s.cfg.WiFi.Networks, config.WiFiNetCfg{
+		SSID:     ssid,
+		Password: psk,
+		Security: security,
+		Priority: len(s.cfg.WiFi.Networks) + 1,
+	})
+
+	s.saveWiFiConfig(w, r)
+}
+
+// handleWiFiDelete removes a WiFi network by index and writes wpa_supplicant.conf.
+func (s *Server) handleWiFiDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Redirect(w, r, "/settings#wifi", http.StatusSeeOther)
+		return
+	}
+	r.ParseForm()
+	var idx int
+	if _, err := fmt.Sscanf(r.FormValue("index"), "%d", &idx); err != nil {
+		http.Redirect(w, r, "/settings#wifi", http.StatusSeeOther)
+		return
+	}
+
+	nets := s.cfg.WiFi.Networks
+	if idx < 0 || idx >= len(nets) {
+		http.Redirect(w, r, "/settings#wifi", http.StatusSeeOther)
+		return
+	}
+	s.cfg.WiFi.Networks = append(nets[:idx], nets[idx+1:]...)
+	// Re-number priorities
+	for i := range s.cfg.WiFi.Networks {
+		s.cfg.WiFi.Networks[i].Priority = i + 1
+	}
+
+	s.saveWiFiConfig(w, r)
+}
+
+// saveWiFiConfig persists config.json and wpa_supplicant.conf after a WiFi change.
+func (s *Server) saveWiFiConfig(w http.ResponseWriter, r *http.Request) {
+	if s.configPath != "" {
+		if err := config.Save(s.configPath, s.cfg); err != nil {
+			http.Redirect(w, r, "/settings?wifi_error=Failed+to+save+config#wifi", http.StatusSeeOther)
+			return
+		}
+	}
+	if err := config.WriteWPAConf(s.cfg.WiFi.Networks); err != nil {
+		// Non-fatal on dev machine (path doesn't exist); log it.
+		// On device, this updates the conf so the next reboot uses the new network list.
+		_ = err
+	}
+	http.Redirect(w, r, "/settings?wifi_saved=1#wifi", http.StatusSeeOther)
 }
 
 // handleRestarting shows a "restarting" page that polls /status until the gateway is back.

@@ -45,6 +45,17 @@
         .danger-actions { display: flex; gap: .75rem; flex-wrap: wrap; margin-top: .5rem; }
         .danger-actions form { margin: 0; padding: 0; }
         .danger-actions button { display: inline-block; vertical-align: middle; }
+        .wifi-list { margin: 0 0 .75rem; padding: 0; list-style: none; }
+        .wifi-list li { display: flex; align-items: center; justify-content: space-between;
+                        padding: .4rem 0; border-bottom: 1px solid #e9ecef; }
+        .wifi-list li:last-child { border-bottom: none; }
+        .wifi-net-name { font-weight: 500; font-size: .9rem; }
+        .wifi-net-meta { font-size: .75rem; color: #6c757d; }
+        .wifi-add-grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: .5rem; align-items: end; }
+        @media (max-width: 600px) { .wifi-add-grid { grid-template-columns: 1fr; } }
+        .wifi-add-grid label { margin-bottom: 0; }
+        .wifi-flash-ok  { color: #155724; background: #d4edda; padding: .4rem .75rem; border-radius: 4px; font-size: .85rem; margin-bottom: .5rem; }
+        .wifi-flash-err { color: #721c24; background: #f8d7da; padding: .4rem .75rem; border-radius: 4px; font-size: .85rem; margin-bottom: .5rem; }
     </style>
 </head>
 <body>
@@ -101,6 +112,49 @@
                     <input type="number" name="sms_max_reply_chars" value="{{.Cfg.SMSMaxReplyChars}}" min="1" max="160">
                 </label>
             </div>
+        </article>
+        <article id="wifi">
+            <header><strong>WiFi Networks</strong></header>
+            {{if .WiFiSaved}}<p class="wifi-flash-ok">WiFi network list updated. Changes take effect on next reboot.</p>{{end}}
+            {{if .WiFiError}}<p class="wifi-flash-err">{{.WiFiError}}</p>{{end}}
+            {{if .Cfg.WiFi.Networks}}
+            <ul class="wifi-list">
+                {{range $i, $n := .Cfg.WiFi.Networks}}
+                <li>
+                    <div>
+                        <div class="wifi-net-name">{{$n.SSID}}</div>
+                        <div class="wifi-net-meta">{{$n.Security}} &bull; priority {{$n.Priority}}</div>
+                    </div>
+                    <form method="POST" action="/settings/wifi/delete" style="margin:0">
+                        <input type="hidden" name="index" value="{{$i}}">
+                        <button type="submit" class="btn-danger" style="padding:.2rem .6rem;font-size:.8rem"
+                            onclick="return confirm('Remove {{$n.SSID}}?')">Remove</button>
+                    </form>
+                </li>
+                {{end}}
+            </ul>
+            {{else}}
+            <p style="color:#6c757d;font-size:.85rem;font-style:italic;margin-bottom:.75rem">No networks saved.</p>
+            {{end}}
+            <form method="POST" action="/settings/wifi/add">
+                <div class="wifi-add-grid">
+                    <label>SSID
+                        <input type="text" name="ssid" placeholder="Network name" required>
+                    </label>
+                    <label>Password
+                        <input type="password" name="psk" placeholder="WPA2 passphrase">
+                    </label>
+                    <label>Security
+                        <select name="security">
+                            <option value="WPA2">WPA2</option>
+                            <option value="WPA">WPA</option>
+                            <option value="OPEN">Open</option>
+                        </select>
+                    </label>
+                </div>
+                <button type="submit" style="background:#0d6efd;color:#fff;border:none;padding:.4rem 1rem;border-radius:6px;cursor:pointer;font-size:.85rem;margin-top:.25rem">Add Network</button>
+            </form>
+            <small style="display:block;margin-top:.5rem;color:#6c757d">WiFi changes take effect after the next reboot. The dongle will connect to the highest-priority reachable network.</small>
         </article>
         <article>
             <header><strong>Authorised Reply Senders</strong></header>

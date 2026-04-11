@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -200,7 +199,7 @@ func (s *setupServer) handleSave(w http.ResponseWriter, r *http.Request) {
 	s.logger.Printf("Setup mode: saved %d network(s) to %s", len(nets), s.configPath)
 
 	// Write wpa_supplicant.conf from the new network list.
-	if err := writeWPAConf(nets); err != nil {
+	if err := config.WriteWPAConf(nets); err != nil {
 		s.logger.Printf("Setup mode: failed to write wpa_supplicant.conf: %v", err)
 		// Non-fatal: the gateway will regenerate it on next run if possible.
 	} else {
@@ -225,25 +224,6 @@ func (s *setupServer) handleSave(w http.ResponseWriter, r *http.Request) {
 func (s *setupServer) handleRebooting(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, rebootingHTML)
-}
-
-// writeWPAConf generates /data/misc/wifi/wpa_supplicant.conf from the network list.
-func writeWPAConf(networks []config.WiFiNetCfg) error {
-	var sb strings.Builder
-	sb.WriteString("ctrl_interface=/data/misc/wifi/sockets\nupdate_config=1\nap_scan=1\n")
-	for _, n := range networks {
-		sb.WriteString("network={\n")
-		sb.WriteString(fmt.Sprintf("    ssid=%q\n", n.SSID))
-		if strings.ToUpper(n.Security) == "OPEN" || n.Password == "" {
-			sb.WriteString("    key_mgmt=NONE\n")
-		} else {
-			sb.WriteString(fmt.Sprintf("    psk=%q\n", n.Password))
-			sb.WriteString("    key_mgmt=WPA-PSK\n")
-		}
-		sb.WriteString(fmt.Sprintf("    priority=%d\n", n.Priority))
-		sb.WriteString("}\n")
-	}
-	return os.WriteFile("/data/misc/wifi/wpa_supplicant.conf", []byte(sb.String()), 0644)
 }
 
 const setupHTML = `<!DOCTYPE html>

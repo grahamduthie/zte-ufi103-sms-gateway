@@ -331,6 +331,19 @@ func main() {
 		runBalanceChecker(ctx, db, bridge, logger)
 	}()
 
+	// Scheduled reboot — daily reboot at configured time to recover from WiFi
+	// driver crashes that would otherwise leave the web GUI unreachable.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Printf("Scheduled reboot recovered from panic: %v", r)
+			}
+		}()
+		runScheduledReboot(ctx, cfg, logger)
+	}()
+
 	// Housekeeping — log rotation, WAL checkpoint, old record pruning.
 	wg.Add(1)
 	go func() {

@@ -110,6 +110,13 @@
             </label>
             <small>Only emails from these addresses will be forwarded as SMS replies.</small>
         </article>
+        <article>
+            <header><strong>Maintenance</strong></header>
+            <label>Scheduled Daily Reboot Time <small>(HH:MM, UK time — leave blank to disable)</small>
+                <input type="time" name="scheduled_reboot_time" value="{{.Cfg.Web.ScheduledRebootTime}}" style="max-width:160px">
+            </label>
+            <small>The WiFi driver on this device can crash and leave the web GUI unreachable. A daily reboot at a quiet time (e.g. 03:00) ensures automatic recovery. The gateway restarts within ~2 minutes of reboot.</small>
+        </article>
         <button type="submit">Save Settings</button>
     </form>
     <p><small>Note: all settings changes take effect after restarting the gateway (see Danger Zone below).</small></p>

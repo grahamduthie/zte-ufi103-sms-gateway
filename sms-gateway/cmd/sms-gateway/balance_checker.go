@@ -53,7 +53,17 @@ func runBalanceChecker(ctx context.Context, db *database.DB, bridge *email.Bridg
 		ukNow := now.Add(time.Hour) // approximate UK time (UTC+1 / BST)
 
 		// Check timeout: no response arrived within the 10-minute window.
+		// Re-check the DB flag because handleIncomingBalanceResponse (called
+		// from the SMS poller goroutine) clears it on a successful reply.
+		// Without this check, the local waitDeadline variable would fire
+		// even after the response was received (goroutine race).
 		if !waitDeadline.IsZero() && now.After(waitDeadline) {
+			pendingSince, _ := db.GetHealth("balance_check_pending_since")
+			if pendingSince == "" {
+				// Response was already handled by the poller goroutine.
+				waitDeadline = time.Time{}
+				continue
+			}
 			logger.Printf("Balance checker: no response from GiffGaff within 10 minutes")
 			db.SetHealth("balance_check_pending_since", "")
 			waitDeadline = time.Time{}

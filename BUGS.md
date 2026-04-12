@@ -705,6 +705,66 @@ response was unparseable.
 
 ---
 
+## Bug 20: Balance Checker Sends "No Reply" Email Even After Response Received (Fixed — 2026-04-12)
+
+### Symptom
+Weekly GiffGaff balance check receives a reply (visible in the received SMS
+list and the balance response email is sent), but ~10 minutes later a second
+email arrives saying "no response received".
+
+### Root cause
+The `runBalanceChecker` goroutine stores a local `waitDeadline` variable (set
+to 10 minutes after enqueueing the balance check). When the SMS poller
+goroutine receives the reply and calls `handleIncomingBalanceResponse`, it
+correctly clears `balance_check_pending_since` in the database and sends the
+response email. But **it does not reset the balance checker's local
+`waitDeadline`**.
+
+The balance checker only resets `waitDeadline` when the timeout fires (line 60).
+So even though the reply was processed at 09:00:46, the local `waitDeadline`
+remained set to ~09:10:22. At the next 1-minute tick past that deadline, the
+checker saw `now.After(waitDeadline)`, skipped the DB flag check entirely, and
+sent the spurious "no reply" email.
+
+Log evidence from 2026-04-12:
+```
+09:00:22 Balance checker: sending INFO to 85075
+09:00:36 SMS sent to 85075 (ref=28)
+09:00:46 Imported SMS from giffgaff (SIM index 0)
+09:00:46 Balance checker: response received from "giffgaff"   ← handled OK
+09:00:47 Imported SMS from giffgaff (SIM index 1)
+09:00:48 Forwarded service message 62 from giffgaff to admin
+09:11:22 Balance checker: no response from GiffGaff within 10 minutes  ← BUG
+```
+
+### Fix
+Before sending the "no reply" email, the balance checker now re-checks
+`balance_check_pending_since` in the database. If it's already been cleared by
+`handleIncomingBalanceResponse`, the goroutine resets its local `waitDeadline`
+and skips the email:
+
+```go
+if !waitDeadline.IsZero() && now.After(waitDeadline) {
+    pendingSince, _ := db.GetHealth("balance_check_pending_since")
+    if pendingSince == "" {
+        // Response was already handled by the poller goroutine.
+        waitDeadline = time.Time{}
+        continue
+    }
+    // ... proceed with timeout email
+}
+```
+
+### Files changed
+| File | Change |
+|------|--------|
+| `cmd/sms-gateway/balance_checker.go` | Added DB flag re-check before timeout email; clears `waitDeadline` on stale deadline |
+
+### Status
+✅ Fixed — 2026-04-12.
+
+---
+
 ## Feature Notes (not bugs, but non-obvious discoveries)
 
 ### GiffGaff Named Sender Encoding

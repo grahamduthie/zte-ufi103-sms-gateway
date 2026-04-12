@@ -507,4 +507,10 @@ changes. Check `mbu.Mailbox.Messages` to know if there are new messages.
 | 55 | `start.sh` AP fallback branch + PID guard cmdline validation | ✅ Done — checks `/proc/$PID/cmdline` to avoid stale-PID false positives |
 | 56 | WiFi management UI in Settings: add, edit, reorder (↑/↓), remove | ✅ Done — 4 new routes in server.go; WiFi article moved outside main form (nested form bug fixed) |
 
-*Last updated: 2026-04-11*
+## Additional Items Completed (2026-04-12)
+
+| # | Task | Status |
+|---|------|--------|
+| 57 | Bug 20: Balance checker "no reply" race condition | ✅ Fixed — goroutine-local `waitDeadline` no longer fires after `handleIncomingBalanceResponse` clears DB flag; DB re-check before timeout email |
+
+*Last updated: 2026-04-12*

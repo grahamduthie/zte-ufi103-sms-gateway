@@ -825,6 +825,10 @@ func htmlEscape(s string) string {
 
 // formatMultipartMessage builds a MIME multipart email with an HTML body and
 // an embedded logo image (as a CID attachment).
+//
+// Uses multipart/related for the HTML+logo pair (RFC 2387), nested inside
+// multipart/mixed. This ensures clients like Thunderbird resolve cid:
+// references inline instead of showing the image as an attachment.
 func formatMultipartMessage(headers map[string]string, htmlBody string) string {
 	var sb strings.Builder
 
@@ -834,10 +838,16 @@ func formatMultipartMessage(headers map[string]string, htmlBody string) string {
 	}
 	sb.WriteString("\r\n")
 
-	// Multipart/mixed boundary
+	// Outer multipart/mixed boundary
 	sb.WriteString("--MSG_BOUNDARY\r\n")
 
+	// Inner multipart/related — tells the client that the HTML and logo
+	// belong together; cid: references are resolved inline.
+	sb.WriteString("Content-Type: multipart/related; boundary=\"RELATED_BOUNDARY\"\r\n")
+	sb.WriteString("\r\n")
+
 	// HTML part
+	sb.WriteString("--RELATED_BOUNDARY\r\n")
 	sb.WriteString("Content-Type: text/html; charset=\"UTF-8\"\r\n")
 	sb.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
 	sb.WriteString("\r\n")
@@ -846,7 +856,7 @@ func formatMultipartMessage(headers map[string]string, htmlBody string) string {
 
 	// Logo part (if available)
 	if logoBase64 != "" {
-		sb.WriteString("--MSG_BOUNDARY\r\n")
+		sb.WriteString("--RELATED_BOUNDARY\r\n")
 		sb.WriteString("Content-Type: image/png; name=\"logo.png\"\r\n")
 		sb.WriteString("Content-Transfer-Encoding: base64\r\n")
 		sb.WriteString("Content-ID: <logo-image>\r\n")
@@ -865,6 +875,7 @@ func formatMultipartMessage(headers map[string]string, htmlBody string) string {
 		}
 	}
 
+	sb.WriteString("--RELATED_BOUNDARY--\r\n")
 	sb.WriteString("--MSG_BOUNDARY--\r\n")
 	return sb.String()
 }

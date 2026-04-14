@@ -765,6 +765,46 @@ if !waitDeadline.IsZero() && now.After(waitDeadline) {
 
 ---
 
+## Bug 21: Logo Shown as Attachment in Thunderbird (Fixed — 2026-04-14)
+
+### Symptom
+The Marlow FM logo renders inline in Gmail but appears as an attachment in
+Thunderbird.
+
+### Root cause
+`formatMultipartMessage` in `internal/email/bridge.go` builds a flat
+`multipart/mixed` message with HTML and logo as sibling parts:
+
+```
+multipart/mixed
+├── text/html (references cid:logo-image)
+└── image/png (Content-ID: <logo-image>)
+```
+
+Gmail resolves `cid:` references even in `multipart/mixed`. Thunderbird
+follows RFC 2387 more strictly — it only resolves `cid:` references when the
+HTML and image are grouped under `multipart/related`.
+
+### Fix
+Nested a `multipart/related` container inside `multipart/mixed`:
+
+```
+multipart/mixed
+└── multipart/related
+    ├── text/html (references cid:logo-image)
+    └── image/png (Content-ID: <logo-image>)
+```
+
+### Files changed
+| File | Change |
+|------|--------|
+| `internal/email/bridge.go` | `formatMultipartMessage` — added inner `multipart/related` boundary wrapping HTML + logo |
+
+### Status
+✅ Fixed — 2026-04-14.
+
+---
+
 ## Feature Notes (not bugs, but non-obvious discoveries)
 
 ### GiffGaff Named Sender Encoding

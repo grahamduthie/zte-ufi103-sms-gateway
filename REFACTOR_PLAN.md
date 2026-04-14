@@ -513,4 +513,10 @@ changes. Check `mbu.Mailbox.Messages` to know if there are new messages.
 |---|------|--------|
 | 57 | Bug 20: Balance checker "no reply" race condition | ✅ Fixed — goroutine-local `waitDeadline` no longer fires after `handleIncomingBalanceResponse` clears DB flag; DB re-check before timeout email |
 
-*Last updated: 2026-04-12*
+## Additional Items Completed (2026-04-14)
+
+| # | Task | Status |
+|---|------|--------|
+| 58 | Bug 21: Logo shown as attachment in Thunderbird | ✅ Fixed — `multipart/related` nested inside `multipart/mixed` per RFC 2387 |
+
+*Last updated: 2026-04-14*

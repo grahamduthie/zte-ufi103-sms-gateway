@@ -1,6 +1,6 @@
 # ZTE UFI103 SMS Gateway — Status & Quick Reference
 
-*Last updated: 2026-04-12 (balance checker race fix)*
+*Last updated: 2026-04-14 (Thunderbird logo inline fix)*
 *Device Serial: 19ce8266*
 
 ---
@@ -39,6 +39,7 @@
 | Date-based session IDs | ✅ | Format `DDMMYY-NNN` (e.g. `060426-001`), stored in `daemon_health` |
 | Email threading | ✅ | Delivery confirmations use matching `Re: Text from +44... [DDMMYY-NNN]` subject |
 | Balance checker race fix | ✅ | "No reply" email no longer fires after response received — goroutine race on `waitDeadline` fixed 2026-04-12 |
+| Thunderbird logo inline fix | ✅ | Logo embedded via `multipart/related` (RFC 2387) — no longer shown as attachment in Thunderbird |
 | Restart page | ✅ | `/restarting` shows spinner, auto-redirects when gateway is back |
 | GitHub security | ✅ | No passwords, phone numbers, or personal emails in repo or history |
 

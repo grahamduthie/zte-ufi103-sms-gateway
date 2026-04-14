@@ -12,12 +12,15 @@ import (
 
 // SMS represents a text message from the SIM or modem storage.
 type SMS struct {
-	Index     int
-	Status    string
-	Sender    string
-	Timestamp string
-	Text      string
-	Storage   string
+	Index       int
+	Status      string
+	Sender      string
+	Timestamp   string
+	Text        string
+	Storage     string
+	ConcatRef   int // 0 = not a concatenated part
+	ConcatTotal int // 0 or 1 = single-part message
+	ConcatPart  int // 0 = single-part, 1-based sequence number
 }
 
 // SignalInfo holds the current signal strength.
@@ -990,6 +993,41 @@ func (s *Session) GetSMSC() (string, error) {
 	return m[1], nil
 }
 
+// parseUDH extracts concatenation metadata from the User Data Header at the
+// start of an SMS body (text mode). Returns the cleaned body (UDH stripped)
+// and concat metadata. If no valid concat UDH is found, the body is returned
+// unchanged with zeros for the concat fields.
+//
+// 8-bit concat UDH (6 bytes): [05][00][03][ref][total][part]
+// 16-bit concat UDH (7 bytes): [06][08][04][refHi][refLo][total][part]
+func parseUDH(body string) (cleanBody string, concatRef, concatTotal, concatPart int) {
+	if len(body) < 6 {
+		return body, 0, 0, 0
+	}
+	b := []byte(body)
+
+	// 8-bit reference (IEI 0x00): [UDHL=05][IEI=00][LEN=03][ref][total][part]
+	if b[0] == 0x05 && b[1] == 0x00 && b[2] == 0x03 {
+		total := int(b[4])
+		part := int(b[5])
+		if total >= 2 && part >= 1 && part <= total {
+			return string(b[6:]), int(b[3]), total, part
+		}
+	}
+
+	// 16-bit reference (IEI 0x08): [UDHL=06][IEI=08][LEN=04][refHi][refLo][total][part]
+	if len(body) >= 7 && b[0] == 0x06 && b[1] == 0x08 && b[2] == 0x04 {
+		total := int(b[5])
+		part := int(b[6])
+		if total >= 2 && part >= 1 && part <= total {
+			ref := (int(b[3]) << 8) | int(b[4])
+			return string(b[7:]), ref, total, part
+		}
+	}
+
+	return body, 0, 0, 0
+}
+
 // parseCMGL parses the output of AT+CMGL="ALL" into SMS structs.
 //
 // The previous implementation had a double-increment bug (for-loop i++ plus
@@ -1034,7 +1072,15 @@ func parseCMGL(output, storage string) ([]SMS, error) {
 			i = j // advance outer loop past the body lines we've consumed
 		}
 
-		sms.Text = decodeIfNeeded(strings.Join(bodyLines, "\n"))
+		// Strip UDH (User Data Header) for concatenated SMS detection, then
+		// decode if needed (hex/GSM 7-bit/UCS-2).
+		rawBody := strings.Join(bodyLines, "\n")
+		cleanBody, concatRef, concatTotal, concatPart := parseUDH(rawBody)
+
+		sms.Text = decodeIfNeeded(cleanBody)
+		sms.ConcatRef = concatRef
+		sms.ConcatTotal = concatTotal
+		sms.ConcatPart = concatPart
 		msgs = append(msgs, sms)
 	}
 

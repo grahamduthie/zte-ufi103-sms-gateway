@@ -24,6 +24,9 @@ type Message struct {
 	ForwardAttempts int
 	EmailSessionID  sql.NullString
 	DeletedFromSIM  bool
+	ConcatRef       int // 0 = not a concatenated part
+	ConcatTotal     int // 0 or 1 = single-part message
+	ConcatPart      int // 0 = single-part, 1-based sequence number
 }
 
 // SendQueueEntry represents a pending outbound SMS.
@@ -76,7 +79,10 @@ CREATE TABLE IF NOT EXISTS messages (
     forward_attempts  INTEGER DEFAULT 0,
     email_session_id  TEXT,
     session_prefix    TEXT,
-    deleted_from_sim  INTEGER DEFAULT 0
+    deleted_from_sim  INTEGER DEFAULT 0,
+    concat_ref        INTEGER DEFAULT 0,
+    concat_total      INTEGER DEFAULT 0,
+    concat_part       INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS email_sessions (
@@ -133,6 +139,10 @@ func (d *DB) Migrate() {
 	d.Exec(`ALTER TABLE send_queue ADD COLUMN next_retry_at TEXT`)
 	// session_prefix added for email threading on delivery confirmations (2026-04-07)
 	d.Exec(`ALTER TABLE send_queue ADD COLUMN session_prefix TEXT`)
+	// concat_* added for multi-part SMS reassembly (2026-04-14)
+	d.Exec(`ALTER TABLE messages ADD COLUMN concat_ref INTEGER DEFAULT 0`)
+	d.Exec(`ALTER TABLE messages ADD COLUMN concat_total INTEGER DEFAULT 0`)
+	d.Exec(`ALTER TABLE messages ADD COLUMN concat_part INTEGER DEFAULT 0`)
 }
 
 // Create indexes (idempotent with IF NOT EXISTS workaround via try)
@@ -153,12 +163,12 @@ func (d *DB) CreateIndexes() {
 }
 
 // InsertMessage saves an incoming SMS to the database.
-func (d *DB) InsertMessage(sender, body string, simIndex int) (int64, error) {
+func (d *DB) InsertMessage(sender, body string, simIndex int, concatRef, concatTotal, concatPart int) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := d.Exec(
-		`INSERT INTO messages (sim_index, sender, received_at, body, deleted_from_sim)
-         VALUES (?, ?, ?, ?, 0)`,
-		simIndex, sender, now, body,
+		`INSERT INTO messages (sim_index, sender, received_at, body, deleted_from_sim, concat_ref, concat_total, concat_part)
+         VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
+		simIndex, sender, now, body, concatRef, concatTotal, concatPart,
 	)
 	if err != nil {
 		return 0, err
@@ -217,7 +227,9 @@ func (d *DB) LookupSenderByPrefix(prefix string) (string, error) {
 // GetUnforwardedMessages returns messages that haven't been forwarded yet.
 func (d *DB) GetUnforwardedMessages() ([]Message, error) {
 	rows, err := d.Query(
-		`SELECT id, COALESCE(sim_index, -1), sender, received_at, body, COALESCE(forward_attempts,0), deleted_from_sim
+		`SELECT id, COALESCE(sim_index, -1), sender, received_at, body,
+			 COALESCE(forward_attempts,0), deleted_from_sim,
+			 COALESCE(concat_ref,0), COALESCE(concat_total,0), COALESCE(concat_part,0)
          FROM messages WHERE forwarded_at IS NULL ORDER BY received_at ASC LIMIT 50`,
 	)
 	if err != nil {
@@ -229,7 +241,8 @@ func (d *DB) GetUnforwardedMessages() ([]Message, error) {
 	for rows.Next() {
 		var m Message
 		err := rows.Scan(&m.ID, &m.SIMIndex, &m.Sender, &m.ReceivedAt, &m.Body,
-			&m.ForwardAttempts, &m.DeletedFromSIM)
+			&m.ForwardAttempts, &m.DeletedFromSIM,
+			&m.ConcatRef, &m.ConcatTotal, &m.ConcatPart)
 		if err != nil {
 			return nil, err
 		}

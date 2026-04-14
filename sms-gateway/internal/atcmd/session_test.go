@@ -1,6 +1,7 @@
 package atcmd
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -354,4 +355,112 @@ func TestIsTerminalResponse(t *testing.T) {
 			t.Errorf("isTerminalResponse(%q) = %v, want %v", tc.resp, got, tc.want)
 		}
 	}
+}
+
+// ── parseUDH tests ────────────────────────────────────────────────────────
+
+func TestParseUDH_8BitConcat(t *testing.T) {
+	// [05][00][03][ref=7][total=2][part=1] "First half"
+	body := string([]byte{0x05, 0x00, 0x03, 0x07, 0x02, 0x01}) + "First half"
+	clean, ref, total, part := parseUDH(body)
+	if clean != "First half" {
+		t.Fatalf("body: got %q, want %q", clean, "First half")
+	}
+	if ref != 7 || total != 2 || part != 1 {
+		t.Fatalf("ref=%d, total=%d, part=%d, want ref=7, total=2, part=1", ref, total, part)
+	}
+}
+
+func TestParseUDH_8BitConcat_Part2(t *testing.T) {
+	body := string([]byte{0x05, 0x00, 0x03, 0x07, 0x02, 0x02}) + "Second half"
+	clean, ref, total, part := parseUDH(body)
+	if clean != "Second half" {
+		t.Fatalf("body: got %q, want %q", clean, "Second half")
+	}
+	if ref != 7 || total != 2 || part != 2 {
+		t.Fatalf("ref=%d, total=%d, part=%d, want ref=7, total=2, part=2", ref, total, part)
+	}
+}
+
+func TestParseUDH_16BitConcat(t *testing.T) {
+	// [06][08][04][ref=0x00FF][total=3][part=2] "Middle part"
+	body := string([]byte{0x06, 0x08, 0x04, 0x00, 0xFF, 0x03, 0x02}) + "Middle part"
+	clean, ref, total, part := parseUDH(body)
+	if clean != "Middle part" {
+		t.Fatalf("body: got %q, want %q", clean, "Middle part")
+	}
+	if ref != 255 || total != 3 || part != 2 {
+		t.Fatalf("ref=%d, total=%d, part=%d, want ref=255, total=3, part=2", ref, total, part)
+	}
+}
+
+func TestParseUDH_NoUDH(t *testing.T) {
+	body := "Hello world"
+	clean, ref, total, part := parseUDH(body)
+	if clean != "Hello world" {
+		t.Fatalf("body changed: got %q", clean)
+	}
+	if ref != 0 || total != 0 || part != 0 {
+		t.Fatalf("expected zeros, got ref=%d, total=%d, part=%d", ref, total, part)
+	}
+}
+
+func TestParseUDH_TooShort(t *testing.T) {
+	body := "Hi" // too short for any UDH
+	clean, ref, total, part := parseUDH(body)
+	if clean != "Hi" {
+		t.Fatalf("body changed: got %q", clean)
+	}
+	if ref != 0 || total != 0 || part != 0 {
+		t.Fatalf("expected zeros, got ref=%d, total=%d, part=%d", ref, total, part)
+	}
+}
+
+func TestParseUDH_InvalidPartNumber(t *testing.T) {
+	// Part number 0 is invalid
+	body := string([]byte{0x05, 0x00, 0x03, 0x01, 0x02, 0x00}) + "Bad"
+	clean, ref, total, part := parseUDH(body)
+	if clean != string([]byte{0x05, 0x00, 0x03, 0x01, 0x02, 0x00})+"Bad" {
+		t.Fatalf("should not match invalid UDH, got body %q", clean)
+	}
+	if ref != 0 || total != 0 || part != 0 {
+		t.Fatalf("expected zeros for invalid UDH, got ref=%d, total=%d, part=%d", ref, total, part)
+	}
+}
+
+func TestParseUDH_PartExceedsTotal(t *testing.T) {
+	// Part 3 of 2 is invalid
+	body := string([]byte{0x05, 0x00, 0x03, 0x01, 0x02, 0x03}) + "Bad"
+	clean, _, _, _ := parseUDH(body)
+	if clean != string([]byte{0x05, 0x00, 0x03, 0x01, 0x02, 0x03})+"Bad" {
+		t.Fatalf("should not match invalid UDH, got body %q", clean)
+	}
+}
+
+func TestParseCMGL_WithConcatUDH(t *testing.T) {
+	part1 := string([]byte{0x05, 0x00, 0x03, 0x42, 0x02, 0x01}) + "This is a long"
+	part2 := string([]byte{0x05, 0x00, 0x03, 0x42, 0x02, 0x02}) + " message split into two parts"
+
+	resp := fmt.Sprintf(
+		`+CMGL: 1,"REC UNREAD","+447912437900",,"26/04/14,16:37:52+04"
+%s
+OK`,
+		part1,
+	)
+	msgs, err := parseCMGL(resp, "SM")
+	if err != nil {
+		t.Fatalf("parseCMGL failed: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Text != "This is a long" {
+		t.Fatalf("body: got %q, want %q", msgs[0].Text, "This is a long")
+	}
+	if msgs[0].ConcatRef != 0x42 || msgs[0].ConcatTotal != 2 || msgs[0].ConcatPart != 1 {
+		t.Fatalf("concat: ref=%d, total=%d, part=%d, want ref=66, total=2, part=1",
+			msgs[0].ConcatRef, msgs[0].ConcatTotal, msgs[0].ConcatPart)
+	}
+
+	_ = part2 // part2 would come as a separate +CMGL entry in a real poll
 }

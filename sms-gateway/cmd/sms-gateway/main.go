@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -441,7 +442,7 @@ func processSMS(at *atcmd.Session, db *database.DB, bridge *email.Bridge, cfg *c
 					continue
 				}
 
-				msgID, err := db.InsertMessage(msg.Sender, msg.Text, msg.Index)
+				msgID, err := db.InsertMessage(msg.Sender, msg.Text, msg.Index, msg.ConcatRef, msg.ConcatTotal, msg.ConcatPart)
 				if err != nil {
 					logger.Printf("Insert error for msg %d: %v", msg.Index, err)
 					continue
@@ -473,25 +474,133 @@ func processSMS(at *atcmd.Session, db *database.DB, bridge *email.Bridge, cfg *c
 		logger.Printf("DB error fetching unforwarded: %v", err)
 		return true // AT worked; DB error is not an AT failure
 	}
+
+	// Separate messages into: service sender, multi-part groups, single-part.
+	// Key for grouping: "sender:concatRef"
+	type concatKey struct{ sender, ref string }
+	type concatGroup struct {
+		total    int
+		messages []database.Message
+	}
+	groups := make(map[concatKey]*concatGroup)
+	var singles []database.Message
+	var services []database.Message
+
 	for _, msg := range unforwarded {
 		if isServiceSender(msg.Sender) {
-			// Service SMS (e.g. giffgaff) — admin-only, not the radio station inbox.
-			subj := fmt.Sprintf("Service SMS from %s", msg.Sender)
-			if bridge != nil {
-				if err := bridge.SendAdminEmail(adminEmail, subj, msg.Body); err != nil {
-					logger.Printf("Admin forward error for service message %d: %v", msg.ID, err)
-					db.IncrementForwardAttempts(msg.ID)
-					continue
+			services = append(services, msg)
+		} else if msg.ConcatTotal > 1 && msg.ConcatRef > 0 {
+			key := concatKey{msg.Sender, fmt.Sprintf("%d", msg.ConcatRef)}
+			g, ok := groups[key]
+			if !ok {
+				g = &concatGroup{total: msg.ConcatTotal}
+				groups[key] = g
+			}
+			g.messages = append(g.messages, msg)
+		} else {
+			singles = append(singles, msg)
+		}
+	}
+
+	// Forward service messages immediately.
+	for _, msg := range services {
+		subj := fmt.Sprintf("Service SMS from %s", msg.Sender)
+		if bridge != nil {
+			if err := bridge.SendAdminEmail(adminEmail, subj, msg.Body); err != nil {
+				logger.Printf("Admin forward error for service message %d: %v", msg.ID, err)
+				db.IncrementForwardAttempts(msg.ID)
+				continue
+			}
+		}
+		logger.Printf("Forwarded service message %d from %s to admin", msg.ID, msg.Sender)
+		db.MarkForwarded(msg.ID, "service-sms")
+	}
+
+	// Forward single-part messages immediately.
+	for _, msg := range singles {
+		if err := bridge.ForwardMessage(msg); err != nil {
+			logger.Printf("Forward error for message %d: %v", msg.ID, err)
+			db.IncrementForwardAttempts(msg.ID)
+		} else {
+			logger.Printf("Forwarded message %d from %s to email", msg.ID, msg.Sender)
+		}
+	}
+
+	// Process multi-part groups: reassemble if complete, defer if incomplete.
+	concatTimeout := 30 * time.Second
+	for key, g := range groups {
+		// Sort by part number.
+		sort.Slice(g.messages, func(i, j int) bool {
+			return g.messages[i].ConcatPart < g.messages[j].ConcatPart
+		})
+
+		// Check if we have all parts.
+		complete := len(g.messages) == g.total
+		if complete {
+			for i, m := range g.messages {
+				if m.ConcatPart != i+1 {
+					complete = false
+					break
 				}
 			}
-			logger.Printf("Forwarded service message %d from %s to admin", msg.ID, msg.Sender)
-			db.MarkForwarded(msg.ID, "service-sms")
-		} else {
-			if err := bridge.ForwardMessage(msg); err != nil {
-				logger.Printf("Forward error for message %d: %v", msg.ID, err)
-				db.IncrementForwardAttempts(msg.ID)
+		}
+
+		if complete {
+			// Join all parts in order and forward as one email.
+			var joined strings.Builder
+			for i, m := range g.messages {
+				if i > 0 {
+					joined.WriteString("\n")
+				}
+				joined.WriteString(m.Body)
+			}
+			combined := database.Message{
+				Sender:   g.messages[0].Sender,
+				Body:     joined.String(),
+				ReceivedAt: g.messages[0].ReceivedAt,
+			}
+			if err := bridge.ForwardMessage(combined); err != nil {
+				logger.Printf("Forward error for reassembled concat SMS from %s (ref %s): %v", key.sender, key.ref, err)
+				// Don't increment attempts — retry next cycle with clean body.
 			} else {
-				logger.Printf("Forwarded message %d from %s to email", msg.ID, msg.Sender)
+				// Mark all parts as forwarded.
+				seq := db.NextDailySequence(0)
+				for _, m := range g.messages {
+					db.MarkForwarded(m.ID, seq)
+				}
+				logger.Printf("Forwarded reassembled %d-part SMS from %s (ref %s) as single email", g.total, key.sender, key.ref)
+			}
+		} else {
+			// Incomplete group — check if the first part is older than timeout.
+			oldest := g.messages[0].ReceivedAt
+			if t, err := time.Parse(time.RFC3339, oldest); err == nil && time.Now().UTC().After(t.Add(concatTimeout)) {
+				// Timeout — forward whatever parts we have.
+				var joined strings.Builder
+				for i, m := range g.messages {
+					if i > 0 {
+						joined.WriteString("\n")
+					}
+					joined.WriteString(m.Body)
+				}
+				combined := database.Message{
+					Sender:   g.messages[0].Sender,
+					Body:     joined.String(),
+					ReceivedAt: oldest,
+				}
+				if err := bridge.ForwardMessage(combined); err != nil {
+					logger.Printf("Forward error for timed-out concat SMS from %s (ref %s, %d/%d parts): %v",
+						key.sender, key.ref, len(g.messages), g.total, err)
+				} else {
+					seq := db.NextDailySequence(0)
+					for _, m := range g.messages {
+						db.MarkForwarded(m.ID, seq)
+					}
+					logger.Printf("Forwarded timed-out concat SMS from %s (ref %s, %d/%d parts)",
+						key.sender, key.ref, len(g.messages), g.total)
+				}
+			} else if !complete {
+				logger.Printf("Deferring incomplete concat SMS from %s (ref %s, %d/%d parts) — will retry next poll",
+					key.sender, key.ref, len(g.messages), g.total)
 			}
 		}
 	}

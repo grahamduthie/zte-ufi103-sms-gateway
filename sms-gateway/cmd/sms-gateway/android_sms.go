@@ -84,7 +84,7 @@ func pollAndroidSMS(db *database.DB, bridge *email.Bridge, logger *log.Logger) i
 
 		// Use -2 as a sentinel sim_index meaning "sourced from Android db",
 		// distinct from ≥0 (real SIM slot) and -1 (unknown).
-		msgID, err := db.InsertMessage(address, body, -2)
+		msgID, err := db.InsertMessage(address, body, -2, 0, 0, 0)
 		if err != nil {
 			logger.Printf("Android SMS db: insert error (android_id=%d): %v", androidID, err)
 			continue

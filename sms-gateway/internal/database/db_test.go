@@ -45,7 +45,7 @@ func TestMigrate_CreatesTables(t *testing.T) {
 	db := openTestDB(t)
 
 	// Verify tables exist by performing operations
-	_, err := db.InsertMessage("+447000000000", "Test message", 1)
+	_, err := db.InsertMessage("+447000000000", "Test message", 1, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("InsertMessage failed after migrate: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestMigrate_CreatesTables(t *testing.T) {
 func TestInsertMessage_Success(t *testing.T) {
 	db := openTestDB(t)
 
-	id, err := db.InsertMessage("+447700000001", "Hello world", 1)
+	id, err := db.InsertMessage("+447700000001", "Hello world", 1, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("InsertMessage failed: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestInsertMessage_Success(t *testing.T) {
 func TestInsertMessage_EmptyBody(t *testing.T) {
 	db := openTestDB(t)
 
-	id, err := db.InsertMessage("+447700000001", "", 1)
+	id, err := db.InsertMessage("+447700000001", "", 1, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("InsertMessage with empty body failed: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestInsertMessage_EmptyBody(t *testing.T) {
 func TestInsertMessage_EmptySender(t *testing.T) {
 	db := openTestDB(t)
 
-	id, err := db.InsertMessage("", "Hello world", 1)
+	id, err := db.InsertMessage("", "Hello world", 1, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("InsertMessage with empty sender failed: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestMessageExistsBySIMIndex(t *testing.T) {
 		t.Fatal("expected message to not exist before insert")
 	}
 
-	_, err = db.InsertMessage("+447700000001", "Hello", 1)
+	_, err = db.InsertMessage("+447700000001", "Hello", 1, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("InsertMessage failed: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestMessageExistsBySIMIndex_NULL(t *testing.T) {
 	db := openTestDB(t)
 
 	// Insert and then mark as deleted (sets sim_index = NULL)
-	id, err := db.InsertMessage("+447700000001", "Hello", 1)
+	id, err := db.InsertMessage("+447700000001", "Hello", 1, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("InsertMessage failed: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestMessageExistsBySIMIndex_NULL(t *testing.T) {
 func TestMarkForwarded(t *testing.T) {
 	db := openTestDB(t)
 
-	id, err := db.InsertMessage("+447700000001", "Hello", 1)
+	id, err := db.InsertMessage("+447700000001", "Hello", 1, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("InsertMessage failed: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestMarkForwarded(t *testing.T) {
 func TestMarkDeletedFromSIM(t *testing.T) {
 	db := openTestDB(t)
 
-	id, err := db.InsertMessage("+447700000001", "Hello", 5)
+	id, err := db.InsertMessage("+447700000001", "Hello", 5, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("InsertMessage failed: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestMarkDeletedFromSIM(t *testing.T) {
 func TestCreateEmailSession(t *testing.T) {
 	db := openTestDB(t)
 
-	msgID, err := db.InsertMessage("+447700000001", "Hello", 1)
+	msgID, err := db.InsertMessage("+447700000001", "Hello", 1, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("InsertMessage failed: %v", err)
 	}
@@ -337,13 +337,13 @@ func TestGetUnforwardedMessages(t *testing.T) {
 	db := openTestDB(t)
 
 	// Insert and don't forward
-	_, err := db.InsertMessage("+447700000001", "Unforwarded", 1)
+	_, err := db.InsertMessage("+447700000001", "Unforwarded", 1, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("InsertMessage failed: %v", err)
 	}
 
 	// Insert and forward
-	id2, err := db.InsertMessage("+447700000001", "Forwarded", 2)
+	id2, err := db.InsertMessage("+447700000001", "Forwarded", 2, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("InsertMessage failed: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestCountMessages(t *testing.T) {
 
 	// Insert some messages
 	for i := 0; i < 5; i++ {
-		_, err := db.InsertMessage("+447700000001", "Test", i+1)
+		_, err := db.InsertMessage("+447700000001", "Test", i+1, 0, 0, 0)
 		if err != nil {
 			t.Fatalf("InsertMessage failed: %v", err)
 		}
@@ -415,7 +415,7 @@ func TestGetRecentMessages(t *testing.T) {
 
 	// Insert 10 messages
 	for i := 0; i < 10; i++ {
-		_, err := db.InsertMessage("+447700000001", "Test", i+1)
+		_, err := db.InsertMessage("+447700000001", "Test", i+1, 0, 0, 0)
 		if err != nil {
 			t.Fatalf("InsertMessage failed: %v", err)
 		}
@@ -504,7 +504,7 @@ func TestDatabaseConcurrency(t *testing.T) {
 	done := make(chan bool, 10)
 	for i := 0; i < 10; i++ {
 		go func(n int) {
-			_, err := db.InsertMessage("+447700000001", "Concurrent", n)
+			_, err := db.InsertMessage("+447700000001", "Concurrent", n, 0, 0, 0)
 			if err != nil {
 				t.Errorf("concurrent insert failed: %v", err)
 			}
@@ -593,11 +593,11 @@ func TestConversation_Empty(t *testing.T) {
 func TestConversation_SingleContact_InboundOnly(t *testing.T) {
 	db := openTestDB(t)
 
-	_, err := db.InsertMessage("+447700111111", "Hello from you", 1)
+	_, err := db.InsertMessage("+447700111111", "Hello from you", 1, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("InsertMessage failed: %v", err)
 	}
-	_, err = db.InsertMessage("+447700111111", "Another message", 2)
+	_, err = db.InsertMessage("+447700111111", "Another message", 2, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("InsertMessage failed: %v", err)
 	}
@@ -625,16 +625,16 @@ func TestConversation_MixedInboundOutbound(t *testing.T) {
 	db := openTestDB(t)
 
 	// Different contact first (older)
-	db.InsertMessage("+447700222222", "Hey!", 3)
+	db.InsertMessage("+447700222222", "Hey!", 3, 0, 0, 0)
 	time.Sleep(1100 * time.Millisecond)
 	// Now build the multi-message conversation (newer, should sort first)
-	db.InsertMessage("+447700111111", "Hi there", 1)
+	db.InsertMessage("+447700111111", "Hi there", 1, 0, 0, 0)
 	time.Sleep(1100 * time.Millisecond)
 	// Outbound
 	db.EnqueueSMS("+447700111111", "Hello back", "web", "")
 	time.Sleep(1100 * time.Millisecond)
 	// Another inbound
-	db.InsertMessage("+447700111111", "How are you?", 2)
+	db.InsertMessage("+447700111111", "How are you?", 2, 0, 0, 0)
 
 	convos, err := db.GetConversations()
 	if err != nil {
@@ -676,7 +676,7 @@ func TestConversation_MixedInboundOutbound(t *testing.T) {
 func TestConversation_UnreadCountAfterForward(t *testing.T) {
 	db := openTestDB(t)
 
-	id, _ := db.InsertMessage("+447700111111", "Hello", 1)
+	id, _ := db.InsertMessage("+447700111111", "Hello", 1, 0, 0, 0)
 	db.MarkForwarded(id, "session123")
 
 	convos, _ := db.GetConversations()

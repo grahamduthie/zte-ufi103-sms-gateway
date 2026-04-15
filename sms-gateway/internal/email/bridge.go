@@ -678,13 +678,13 @@ func SetLogoBase64(b64 string) {
 // buildHTMLEmail constructs an HTML email with the Marlow FM logo,
 // the SMS message body, sender phone number, and received timestamp.
 func buildHTMLEmail(message, sender, receivedTime string) string {
-	// Escape HTML special characters in the message body
+	// Escape HTML special characters in the message body.
+	// white-space:pre-wrap in the template renders newlines as line breaks,
+	// so no <br> conversion is needed — adding both would double every break.
 	escaped := strings.ReplaceAll(message, "&", "&amp;")
 	escaped = strings.ReplaceAll(escaped, "<", "&lt;")
 	escaped = strings.ReplaceAll(escaped, ">", "&gt;")
-	// Preserve line breaks
-	escaped = strings.ReplaceAll(escaped, "\r\n", "<br>\r\n")
-	escaped = strings.ReplaceAll(escaped, "\n", "<br>\r\n")
+	escaped = strings.ReplaceAll(escaped, "\r\n", "\n") // normalise CRLF
 
 	logoTag := `<img src="cid:logo-image" alt="Marlow FM" style="display:block; width:48px; height:48px; border:0;">`
 	if logoBase64 == "" {

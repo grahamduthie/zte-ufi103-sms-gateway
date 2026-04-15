@@ -405,9 +405,14 @@ func TestBuildHTMLEmail_EscapesHTML(t *testing.T) {
 }
 
 func TestBuildHTMLEmail_PreservesLineBreaks(t *testing.T) {
+	// The template uses white-space:pre-wrap so newlines are rendered directly
+	// without <br> conversion (which would double every line break).
 	html := buildHTMLEmail("Line 1\nLine 2", "+447700000001", "06 Apr 2026")
-	if !strings.Contains(html, "<br>") {
-		t.Fatal("expected <br> tags for line breaks")
+	if !strings.Contains(html, "Line 1\nLine 2") {
+		t.Fatal("expected literal newline preserved in pre-wrap body")
+	}
+	if strings.Contains(html, "<br>") {
+		t.Fatal("unexpected <br> — pre-wrap renders newlines natively")
 	}
 }
 

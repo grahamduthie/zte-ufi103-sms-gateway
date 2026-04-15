@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -143,6 +144,94 @@ func (d *DB) Migrate() {
 	d.Exec(`ALTER TABLE messages ADD COLUMN concat_ref INTEGER DEFAULT 0`)
 	d.Exec(`ALTER TABLE messages ADD COLUMN concat_total INTEGER DEFAULT 0`)
 	d.Exec(`ALTER TABLE messages ADD COLUMN concat_part INTEGER DEFAULT 0`)
+}
+
+// RetroactiveConcatAssignment assigns concat metadata to old messages that
+// were received before UDH parsing was implemented. It uses a heuristic:
+// messages from the same sender arriving within 5 seconds of each other are
+// treated as parts of a split multi-part SMS.
+//
+// Safe to call repeatedly — only processes messages with concat_ref = 0.
+func (d *DB) RetroactiveConcatAssignment() error {
+	// Find pairs of messages from the same sender within 5 seconds.
+	rows, err := d.Query(`
+		SELECT id, sender, received_at, body
+		FROM messages
+		WHERE concat_ref = 0
+		ORDER BY sender, received_at ASC
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type msg struct {
+		id    int64
+		sender string
+		time  time.Time
+		body  string
+	}
+
+	var all []msg
+	for rows.Next() {
+		var m msg
+		var ts string
+		if err := rows.Scan(&m.id, &m.sender, &ts, &m.body); err != nil {
+			return err
+		}
+		// received_at is stored as RFC3339 text; parse it for time arithmetic.
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			m.time = t
+		} else if t, err := time.Parse("2006-01-02T15:04:05Z07:00", ts); err == nil {
+			m.time = t
+		} else {
+			m.time = time.Now() // fallback: treat as isolated message
+		}
+		all = append(all, m)
+	}
+
+	// Group by sender and find adjacent pairs within 5 seconds.
+	type senderGroup struct {
+		sender string
+		groups [][]msg
+	}
+	senderMsgs := make(map[string][]msg)
+	for _, m := range all {
+		senderMsgs[m.sender] = append(senderMsgs[m.sender], m)
+	}
+
+	for sender, msgs := range senderMsgs {
+		_ = sender
+		i := 0
+		for i < len(msgs) {
+			j := i + 1
+			// Extend group while next message is within 5 seconds of previous.
+			for j < len(msgs) {
+				dt := msgs[j].time.Sub(msgs[j-1].time)
+				if dt > 5*time.Second {
+					break
+				}
+				j++
+			}
+			groupSize := j - i
+			if groupSize > 1 {
+				// Assign concat_ref (use a hash of sender + timestamp as unique ref)
+				ref := int(msgs[i].time.Unix() % 65536)
+				if ref <= 0 {
+					ref = 1
+				}
+				for k := 0; k < groupSize; k++ {
+					part := k + 1
+					_, _ = d.Exec(
+						`UPDATE messages SET concat_ref = ?, concat_total = ?, concat_part = ? WHERE id = ?`,
+						ref, groupSize, part, msgs[i+k].id,
+					)
+				}
+			}
+			i = j
+		}
+	}
+	return nil
 }
 
 // Create indexes (idempotent with IF NOT EXISTS workaround via try)
@@ -354,12 +443,89 @@ func (d *DB) SetHealth(key, value string) error {
 	return err
 }
 
+// mergeConcatParts merges consecutive inbound messages from the same sender
+// with matching concat_ref into a single message with a combined body.
+// Parts are merged in concat_part order. Messages without concat_ref (0) are
+// passed through unchanged.
+func mergeConcatParts(msgs []Message) []Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+
+	type concatKey struct{ sender string; ref int }
+	type concatGroup struct {
+		firstIdx int
+		total    int
+		parts    map[int]*Message // part number -> message
+	}
+
+	// Scan for concat groups.
+	groups := make(map[concatKey]*concatGroup)
+	for i, m := range msgs {
+		if m.ConcatRef > 0 && m.ConcatTotal > 1 {
+			key := concatKey{m.Sender, m.ConcatRef}
+			g, ok := groups[key]
+			if !ok {
+				g = &concatGroup{firstIdx: i, parts: make(map[int]*Message)}
+				groups[key] = g
+			}
+			if m.ConcatTotal > g.total {
+				g.total = m.ConcatTotal
+			}
+			g.parts[m.ConcatPart] = &msgs[i]
+		}
+	}
+
+	// Build merged result.
+	var result []Message
+	skip := make(map[int]bool) // indices to skip (merged into another)
+
+	// For each group, check completeness and merge if all parts present.
+	for key, g := range groups {
+		if len(g.parts) != g.total {
+			continue // incomplete — leave as separate messages
+		}
+
+		// All parts present — merge them.
+		var body strings.Builder
+		firstMsg := g.parts[1]
+		for p := 1; p <= g.total; p++ {
+			part := g.parts[p]
+			if p > 1 {
+				body.WriteString("\n")
+			}
+			body.WriteString(part.Body)
+			skip[g.firstIdx] = true // we'll mark each part's index below
+		}
+
+		// Use the first part's message as the merged result.
+		firstMsg.Body = body.String()
+		// Mark other parts as skipped.
+		for p := 2; p <= g.total; p++ {
+			// Find the index of this part in the original slice.
+			for i, m := range msgs {
+				if m.ConcatRef == key.ref && m.Sender == key.sender && m.ConcatPart == p {
+					skip[i] = true
+				}
+			}
+		}
+	}
+
+	for i, m := range msgs {
+		if !skip[i] {
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
 // GetRecentMessages returns the most recent received messages.
 func (d *DB) GetRecentMessages(limit int) ([]Message, error) {
 	rows, err := d.Query(
 		`SELECT id, COALESCE(sim_index, -1), sender, received_at, body,
                 COALESCE(forwarded_at,''), COALESCE(forward_attempts,0),
-                COALESCE(email_session_id,''), deleted_from_sim
+                COALESCE(email_session_id,''), deleted_from_sim,
+                COALESCE(concat_ref,0), COALESCE(concat_total,0), COALESCE(concat_part,0)
          FROM messages ORDER BY received_at DESC LIMIT ?`,
 		limit,
 	)
@@ -374,7 +540,8 @@ func (d *DB) GetRecentMessages(limit int) ([]Message, error) {
 		var fwd sql.NullString
 		var esid sql.NullString
 		err := rows.Scan(&m.ID, &m.SIMIndex, &m.Sender, &m.ReceivedAt, &m.Body,
-			&fwd, &m.ForwardAttempts, &esid, &m.DeletedFromSIM)
+			&fwd, &m.ForwardAttempts, &esid, &m.DeletedFromSIM,
+			&m.ConcatRef, &m.ConcatTotal, &m.ConcatPart)
 		if err != nil {
 			return nil, err
 		}
@@ -382,7 +549,7 @@ func (d *DB) GetRecentMessages(limit int) ([]Message, error) {
 		m.EmailSessionID = esid
 		msgs = append(msgs, m)
 	}
-	return msgs, nil
+	return mergeConcatParts(msgs), nil
 }
 
 // GetSentMessages returns recently sent SMS from the send queue.
@@ -639,6 +806,9 @@ type ThreadMessage struct {
 	Body      string
 	Timestamp string
 	Status    string // "forwarded", "pending", "sent", "failed"
+	ConcatRef int    // 0 = not a concatenated part
+	ConcatTotal int  // 0 or 1 = single-part message
+	ConcatPart  int  // 0 = single-part, 1-based sequence number
 }
 
 // ConversationPage holds a page of conversation summaries plus metadata.
@@ -729,18 +899,87 @@ func (d *DB) GetConversations() ([]ConversationSummary, error) {
 	return p.Conversations, nil
 }
 
+// mergeConcatThreads merges inbound ThreadMessages with matching concat_ref
+// into a single message with a combined body. Outbound messages are passed
+// through unchanged.
+func mergeConcatThreads(msgs []ThreadMessage) []ThreadMessage {
+	if len(msgs) == 0 {
+		return msgs
+	}
+
+	type concatKey struct{ sender string; ref int }
+	type concatGroup struct {
+		firstIdx int
+		total    int
+		parts    map[int]*ThreadMessage
+	}
+
+	groups := make(map[concatKey]*concatGroup)
+	for i, m := range msgs {
+		if m.Direction == "in" && m.ConcatRef > 0 && m.ConcatTotal > 1 {
+			// sender is embedded in the key but we need a common sender
+			// For conversation threads, all inbound msgs have the same sender.
+			key := concatKey{"", m.ConcatRef}
+			g, ok := groups[key]
+			if !ok {
+				g = &concatGroup{firstIdx: i, parts: make(map[int]*ThreadMessage)}
+				groups[key] = g
+			}
+			if m.ConcatTotal > g.total {
+				g.total = m.ConcatTotal
+			}
+			g.parts[m.ConcatPart] = &msgs[i]
+		}
+	}
+
+	var result []ThreadMessage
+	skip := make(map[int]bool)
+
+	for key, g := range groups {
+		if len(g.parts) != g.total {
+			continue
+		}
+		var body strings.Builder
+		firstMsg := g.parts[1]
+		for p := 1; p <= g.total; p++ {
+			part := g.parts[p]
+			if p > 1 {
+				body.WriteString("\n")
+			}
+			body.WriteString(part.Body)
+		}
+		firstMsg.Body = body.String()
+		for p := 2; p <= g.total; p++ {
+			for i, m := range msgs {
+				if m.Direction == "in" && m.ConcatRef == key.ref && m.ConcatPart == p {
+					skip[i] = true
+				}
+			}
+		}
+	}
+
+	for i, m := range msgs {
+		if !skip[i] {
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
 // GetConversation returns all messages (inbound + outbound) for a single contact,
-// in chronological order.
+// in chronological order. Concatenated SMS parts with matching concat_ref are
+// merged into a single message.
 func (d *DB) GetConversation(number string, limit int) ([]ThreadMessage, error) {
 	rows, err := d.Query(`
 		SELECT 'in' AS direction, body, received_at AS ts,
-			CASE WHEN forwarded_at IS NOT NULL THEN 'forwarded' ELSE 'pending' END AS status
+			CASE WHEN forwarded_at IS NOT NULL THEN 'forwarded' ELSE 'pending' END AS status,
+			COALESCE(concat_ref, 0), COALESCE(concat_total, 0), COALESCE(concat_part, 0)
 		FROM messages
 		WHERE sender = ?
 		UNION ALL
 		SELECT 'out' AS direction, body,
 			COALESCE(sent_at, created_at) AS ts,
-			status
+			status, 0, 0, 0
 		FROM send_queue
 		WHERE to_number = ?
 		ORDER BY ts ASC
@@ -754,12 +993,13 @@ func (d *DB) GetConversation(number string, limit int) ([]ThreadMessage, error) 
 	var msgs []ThreadMessage
 	for rows.Next() {
 		var t ThreadMessage
-		if err := rows.Scan(&t.Direction, &t.Body, &t.Timestamp, &t.Status); err != nil {
+		if err := rows.Scan(&t.Direction, &t.Body, &t.Timestamp, &t.Status,
+			&t.ConcatRef, &t.ConcatTotal, &t.ConcatPart); err != nil {
 			return nil, err
 		}
 		msgs = append(msgs, t)
 	}
-	return msgs, nil
+	return mergeConcatThreads(msgs), nil
 }
 
 // MonthlyCounts holds sent/received counts for the current UK calendar month.

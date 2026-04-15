@@ -71,6 +71,9 @@ func main() {
 	defer db.Close()
 	db.Migrate()
 	db.CreateIndexes()
+	if err := db.RetroactiveConcatAssignment(); err != nil {
+		logger.Printf("Warning: retroactive concat assignment failed: %v", err)
+	}
 	logger.Printf("Database opened at %s", cfg.Database)
 
 	// Test mode

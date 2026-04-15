@@ -495,7 +495,6 @@ func mergeConcatParts(msgs []Message) []Message {
 				body.WriteString("\n")
 			}
 			body.WriteString(part.Body)
-			skip[g.firstIdx] = true // we'll mark each part's index below
 		}
 
 		// Use the first part's message as the merged result.

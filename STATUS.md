@@ -1,6 +1,6 @@
 # ZTE UFI103 SMS Gateway — Status & Quick Reference
 
-*Last updated: 2026-04-15 (PDU mode UDH fix — multi-part SMS now correctly detected)*
+*Last updated: 2026-04-15 (multi-part SMS fully working — PDU mode, seamless join, correct paragraph spacing)*
 *Device Serial: 19ce8266*
 
 ---
@@ -40,7 +40,7 @@
 | Email threading | ✅ | Delivery confirmations use matching `Re: Text from +44... [DDMMYY-NNN]` subject |
 | Balance checker race fix | ✅ | "No reply" email no longer fires after response received — goroutine race on `waitDeadline` fixed 2026-04-12 |
 | Thunderbird logo inline fix | ✅ | Logo embedded via `multipart/related` (RFC 2387) — no longer shown as attachment in Thunderbird |
-| Multi-part SMS reassembly | ✅ | PDU mode (`AT+CMGF=0`) preserves UDH; `DecodeSMSPDU` extracts concat header; forwarder groups by (sender, ref), joins in order, sends single email. 30s timeout. |
+| Multi-part SMS reassembly | ✅ | PDU mode preserves UDH; `DecodeSMSPDU` extracts concat ref; parts joined seamlessly (no separator); single email. 30s timeout for missing parts. |
 | Multi-part SMS in web GUI | ✅ | `GetConversation` and `GetRecentMessages` merge concat parts for display — conversation view and inbox both show one message per SMS |
 | Restart page | ✅ | `/restarting` shows spinner, auto-redirects when gateway is back |
 | GitHub security | ✅ | No passwords, phone numbers, or personal emails in repo or history |

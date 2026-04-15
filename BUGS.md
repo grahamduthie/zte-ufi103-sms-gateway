@@ -951,6 +951,67 @@ The old `parseCMGL`/`parseUDH` path is kept for use by the existing test suite;
 
 ---
 
+## Bug 25: Spurious Line Break Between Concatenated SMS Parts in Email (Fixed — 2026-04-15)
+
+### Symptom
+Reassembled multi-part SMS emails had an unexpected line break at every
+153-character split point (i.e. between each part), breaking mid-word or
+mid-sentence continuity.
+
+### Root cause
+The forwarder joined parts with `"\n"` between them:
+```go
+for i, m := range g.messages {
+    if i > 0 {
+        joined.WriteString("\n")
+    }
+    joined.WriteString(m.Body)
+}
+```
+The network splits at a hard byte boundary with no regard for word or sentence
+boundaries. The `"\n"` separator then rendered as a line break (`<br>`) in the
+email HTML.
+
+### Fix
+Removed the separator entirely — parts are concatenated directly:
+```go
+for _, m := range g.messages {
+    joined.WriteString(m.Body)
+}
+```
+Applied to both the complete-group path and the timeout path.
+
+### Status
+✅ Fixed — 2026-04-15.
+
+---
+
+## Bug 26: Blank Lines in SMS Render as Huge Gaps in HTML Email (Fixed — 2026-04-15)
+
+### Symptom
+An SMS containing a blank line (paragraph break, `\n\n`) produced an enormous
+vertical gap in the forwarded HTML email — much larger than a normal blank line.
+
+### Root cause
+The `buildHTMLEmail` function was doing both:
+1. Converting `\n` → `<br>\r\n` in the message body
+2. Wrapping the result in `<p style="white-space:pre-wrap;">`
+
+`white-space:pre-wrap` renders literal newline characters as line breaks.
+`<br>` also renders as a line break. With both active, every `\n` produced
+two rendered line breaks. A blank line (`\n\n`) therefore produced four
+rendered line breaks — appearing as a large gap.
+
+### Fix
+Removed the `\n` → `<br>` conversion. `white-space:pre-wrap` handles newlines
+natively; `<br>` conversion is unnecessary and harmful alongside it.
+`\r\n` is normalised to `\n` so CRLF line endings don't also double-space.
+
+### Status
+✅ Fixed — 2026-04-15.
+
+---
+
 ## Feature Notes (not bugs, but non-obvious discoveries)
 
 ### GiffGaff Named Sender Encoding

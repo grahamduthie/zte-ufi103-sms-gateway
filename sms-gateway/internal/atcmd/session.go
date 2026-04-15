@@ -425,19 +425,24 @@ func (s *Session) SetTextMode(storage string) error {
 	return err
 }
 
-// ListSMS reads all messages from the specified storage.
+// ListSMS reads all messages from the specified storage using PDU mode
+// (AT+CMGF=0) so that the User Data Header is preserved for multi-part SMS
+// detection. Text mode (AT+CMGF=1) strips the UDH before delivery, making
+// concatenation detection impossible.
 func (s *Session) ListSMS(storage string) ([]SMS, error) {
 	cmds := []string{
 		fmt.Sprintf(`AT+CPMS="%s","%s","%s"`, storage, storage, storage),
-		"AT+CMGF=1",
+		"AT+CMGF=0",      // PDU mode: preserves UDH for multi-part detection
+		`AT+CMGL=4`,      // 4 = all messages (stored + unread)
+		"AT+CMGF=1",      // restore text mode for other commands
 		`AT+CSCS="IRA"`,
-		`AT+CMGL="ALL"`,
 	}
 	out, err := s.sendCommandsMulti(cmds, 800*time.Millisecond)
 	if err != nil {
-		// Partial response — still try to parse.
+		// Partial response — still try to parse what we have.
+		_ = err
 	}
-	return parseCMGL(out, storage)
+	return parseCMGLPDU(out, storage)
 }
 
 // GetSMSCount returns the number of messages in the specified storage.
@@ -991,6 +996,98 @@ func (s *Session) GetSMSC() (string, error) {
 		return "", fmt.Errorf("cannot parse CSCA response: %s", out)
 	}
 	return m[1], nil
+}
+
+// parseCMGLPDU parses the output of AT+CMGL=4 (PDU mode) into SMS structs.
+//
+// Each message appears as two lines:
+//   +CMGL: <index>,<stat>,[<alpha>],<length>
+//   <pdu_hex>
+//
+// The PDU hex is decoded with DecodeSMSPDU which extracts the sender, body,
+// and — crucially — any UDH concatenation header that text mode would strip.
+func parseCMGLPDU(output, storage string) ([]SMS, error) {
+	var msgs []SMS
+	lines := strings.Split(output, "\n")
+	re := regexp.MustCompile(`\+CMGL:\s*(\d+),(\d+),[^,]*,\d+`)
+
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(line, "+CMGL:") {
+			continue
+		}
+		m := re.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		idx, _ := strconv.Atoi(m[1])
+		stat, _ := strconv.Atoi(m[2])
+
+		// Find the PDU hex line immediately following the header.
+		var pduHex string
+		for j := i + 1; j < len(lines); j++ {
+			next := strings.TrimSpace(lines[j])
+			if next == "" {
+				continue
+			}
+			if strings.HasPrefix(next, "+CMGL:") || next == "OK" ||
+				next == "ERROR" || strings.HasPrefix(next, "+CME ERROR:") {
+				break
+			}
+			if isHexLine(next) {
+				pduHex = next
+				i = j
+			}
+			break
+		}
+		if pduHex == "" {
+			continue
+		}
+
+		decoded, err := DecodeSMSPDU(pduHex)
+		if err != nil {
+			// Skip unparseable PDUs rather than aborting the whole list.
+			continue
+		}
+
+		var status string
+		switch stat {
+		case 0:
+			status = "REC UNREAD"
+		case 1:
+			status = "REC READ"
+		default:
+			status = fmt.Sprintf("%d", stat)
+		}
+
+		msgs = append(msgs, SMS{
+			Index:       idx,
+			Status:      status,
+			Sender:      decoded.Sender,
+			Timestamp:   decoded.Timestamp,
+			Text:        decoded.Body,
+			Storage:     storage,
+			ConcatRef:   decoded.ConcatRef,
+			ConcatTotal: decoded.ConcatTotal,
+			ConcatPart:  decoded.ConcatPart,
+		})
+	}
+
+	return msgs, nil
+}
+
+// isHexLine returns true if s is a non-empty string of even length containing
+// only hexadecimal digits. Used to identify PDU hex lines in AT+CMGL=4 output.
+func isHexLine(s string) bool {
+	if len(s) == 0 || len(s)%2 != 0 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // parseUDH extracts concatenation metadata from the User Data Header at the

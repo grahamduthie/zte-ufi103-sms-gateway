@@ -898,6 +898,59 @@ delaying detection.
 
 ---
 
+## Bug 24: Multi-Part SMS UDH Stripped by Modem in Text Mode (Fixed — 2026-04-15)
+
+### Symptom
+Long SMS messages split by the network into concatenated parts were never
+detected as multi-part: all messages arrived with `concat_ref=0`. Parts were
+forwarded as separate emails instead of being reassembled into one.
+
+### Investigation
+After deploying Bugs 22/23, a 3-part test SMS from +447734139947 arrived with
+all three parts at exactly 153 characters each — the precise GSM7 payload
+maximum for an 8-bit UDH concat (160 − 7 UDH septets = 153). The UDH pattern
+in `parseUDH` (`b[0]==0x05, b[1]==0x00, b[2]==0x03`) never matched because the
+modem was stripping the UDH before text-mode delivery.
+
+Root cause confirmed: in text mode (`AT+CMGF=1`), the ZTE/Qualcomm modem
+removes the User Data Header bytes from the PDU before presenting the message
+body. This is standard — the UDH is a PDU-layer construct. The existing
+`parseUDH` function was written assuming UDH would survive text-mode delivery,
+which it doesn't on any modem.
+
+### Fix
+`ListSMS()` now switches to PDU mode (`AT+CMGF=0`) before issuing `AT+CMGL=4`
+and immediately restores text mode afterward. A new `parseCMGLPDU` function
+decodes the raw hex PDU (via `DecodeSMSPDU`) to extract the sender, body, and
+UDH concat header, then returns the same `[]SMS` slice as the old path.
+
+`DecodeSMSPDU` handles:
+- SMS-DELIVER PDU structure (SMSC prefix, OA, PID, DCS, SCTS, UDL, UD)
+- GSM 7-bit encoding (DCS=0x00) including fill-bit alignment after UDH
+- UCS-2 encoding (DCS=0x08) with and without UDH
+- 8-bit concat UDH (IEI 0x00) and 16-bit concat UDH (IEI 0x08)
+- Alphanumeric sender IDs (TON=5, GSM7-encoded)
+
+New helper `gsm7UnpackN(data, n, startBit)` extracts n GSM7 septets starting
+at a given bit offset, replacing the old `gsm7Decode()` for PDU decoding and
+using the proper `gsm7Reverse` lookup so '@' (GSM7 code 0) decodes correctly
+instead of appearing as null.
+
+The old `parseCMGL`/`parseUDH` path is kept for use by the existing test suite;
+`ReadSMS()` still uses it.
+
+### Files changed
+- `internal/atcmd/pdu.go`: added `gsm7Reverse`, `gsm7UnpackN`,
+  `decodePDUAddress`, `decodeSCTS`, `DecodedPDU`, `DecodeSMSPDU`
+- `internal/atcmd/session.go`: added `parseCMGLPDU`, `isHexLine`;
+  `ListSMS()` switched to PDU mode
+- `internal/atcmd/pdu_test.go`: 8 new tests covering all decode paths
+
+### Status
+✅ Fixed — 2026-04-15.
+
+---
+
 ## Feature Notes (not bugs, but non-obvious discoveries)
 
 ### GiffGaff Named Sender Encoding

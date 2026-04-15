@@ -182,6 +182,177 @@ func TestEncodeSMSPDU_InternationalNumber(t *testing.T) {
 	}
 }
 
+// ── DecodeSMSPDU tests ───────────────────────────────────────────────────
+
+// Verified PDUs — constructed manually and cross-checked against the decoder.
+//
+// Anatomy of a PDU used in these tests (bytes in order):
+//   [00]           SMSC length=0 (no SMSC)
+//   [04]           first octet: SMS-DELIVER, no UDHI
+//   [0C]           OA length: 12 digits
+//   [91]           OA type: international
+//   [44 77 00 00 00 10]  OA BCD: +447700000001
+//   [00]           PID
+//   [XX]           DCS
+//   [62 40 51 21 00 00 00]  SCTS: 2026-04-15 12:00:00 +0000
+//   [NN]           UDL
+//   [...]          UD
+
+// TestDecodeSMSPDU_SinglePartGSM7 checks a two-character GSM7 message.
+func TestDecodeSMSPDU_SinglePartGSM7(t *testing.T) {
+	// "Hi" from +447700000001 — GSM7, no UDH
+	// H=72 (0x48), i=105 (0x69)
+	// Packed: byte0 = 0xC8 (H bits + i.bit0), byte1 = 0x34 (i.bits1-6)
+	pdu := "00040C914477000000100000624051210000000 2C834"
+	pdu = strings.ReplaceAll(pdu, " ", "")
+	dec, err := DecodeSMSPDU(pdu)
+	if err != nil {
+		t.Fatalf("DecodeSMSPDU: %v", err)
+	}
+	if dec.Sender != "+447700000001" {
+		t.Errorf("Sender: got %q, want %q", dec.Sender, "+447700000001")
+	}
+	if dec.Body != "Hi" {
+		t.Errorf("Body: got %q, want %q", dec.Body, "Hi")
+	}
+	if dec.ConcatRef != 0 || dec.ConcatTotal != 0 || dec.ConcatPart != 0 {
+		t.Errorf("unexpected concat fields: ref=%d total=%d part=%d",
+			dec.ConcatRef, dec.ConcatTotal, dec.ConcatPart)
+	}
+}
+
+// TestDecodeSMSPDU_MultiPartGSM7 checks that an 8-bit concat UDH is decoded.
+// Body "ABC" (GSM7 codes 65,66,67) with UDH [05 00 03 2A 02 01]:
+//   ref=42, total=2, part=1.
+// UDH is 6 bytes → fillBits=1, startBit=49, udhSeptets=7, UDL=10.
+func TestDecodeSMSPDU_MultiPartGSM7(t *testing.T) {
+	// first octet = 0x44: SMS-DELIVER + UDHI bit (bit 6) + TP-MMS bit (bit 2)
+	pdu := "00440C914477000000100000624051210000000A0500032A020182C221"
+	dec, err := DecodeSMSPDU(pdu)
+	if err != nil {
+		t.Fatalf("DecodeSMSPDU: %v", err)
+	}
+	if dec.Sender != "+447700000001" {
+		t.Errorf("Sender: got %q, want %q", dec.Sender, "+447700000001")
+	}
+	if dec.Body != "ABC" {
+		t.Errorf("Body: got %q, want %q", dec.Body, "ABC")
+	}
+	if dec.ConcatRef != 42 {
+		t.Errorf("ConcatRef: got %d, want 42", dec.ConcatRef)
+	}
+	if dec.ConcatTotal != 2 {
+		t.Errorf("ConcatTotal: got %d, want 2", dec.ConcatTotal)
+	}
+	if dec.ConcatPart != 1 {
+		t.Errorf("ConcatPart: got %d, want 1", dec.ConcatPart)
+	}
+}
+
+// TestDecodeSMSPDU_UCS2 checks a UCS-2 encoded message (DCS=0x08).
+// "Hi" as UCS-2 BE: 00 48 00 69 (4 bytes), UDL=4.
+func TestDecodeSMSPDU_UCS2(t *testing.T) {
+	pdu := "00040C914477000000100008624051210000000400480069"
+	dec, err := DecodeSMSPDU(pdu)
+	if err != nil {
+		t.Fatalf("DecodeSMSPDU: %v", err)
+	}
+	if dec.Sender != "+447700000001" {
+		t.Errorf("Sender: got %q, want %q", dec.Sender, "+447700000001")
+	}
+	if dec.Body != "Hi" {
+		t.Errorf("Body: got %q, want %q", dec.Body, "Hi")
+	}
+	if dec.ConcatRef != 0 {
+		t.Errorf("unexpected concat ref: %d", dec.ConcatRef)
+	}
+}
+
+// TestDecodeSMSPDU_Timestamp checks that the SCTS is decoded correctly.
+func TestDecodeSMSPDU_Timestamp(t *testing.T) {
+	pdu := "00040C9144770000001000006240512100000002C834"
+	dec, err := DecodeSMSPDU(pdu)
+	if err != nil {
+		t.Fatalf("DecodeSMSPDU: %v", err)
+	}
+	// SCTS bytes: 62 40 51 21 00 00 00
+	// YY=26, MM=04, DD=15, hh=12, mm=00, ss=00, tz=+0000
+	want := "2026/04/15 12:00:00+0000"
+	if dec.Timestamp != want {
+		t.Errorf("Timestamp: got %q, want %q", dec.Timestamp, want)
+	}
+}
+
+// TestDecodeSMSPDU_InvalidHex checks that malformed input returns an error.
+func TestDecodeSMSPDU_InvalidHex(t *testing.T) {
+	_, err := DecodeSMSPDU("ZZZZ")
+	if err == nil {
+		t.Fatal("expected error for invalid hex, got nil")
+	}
+}
+
+// TestParseCMGLPDU checks that parseCMGLPDU extracts messages from PDU-mode
+// AT+CMGL=4 output.
+func TestParseCMGLPDU_SingleMessage(t *testing.T) {
+	// single-part "Hi" from +447700000001
+	input := "+CMGL: 1,1,,22\n" +
+		"00040C9144770000001000006240512100000002C834\n" +
+		"OK\n"
+	msgs, err := parseCMGLPDU(input, "SM")
+	if err != nil {
+		t.Fatalf("parseCMGLPDU: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Sender != "+447700000001" {
+		t.Errorf("Sender: got %q", msgs[0].Sender)
+	}
+	if msgs[0].Text != "Hi" {
+		t.Errorf("Text: got %q", msgs[0].Text)
+	}
+	if msgs[0].Index != 1 {
+		t.Errorf("Index: got %d, want 1", msgs[0].Index)
+	}
+	if msgs[0].Status != "REC READ" {
+		t.Errorf("Status: got %q, want %q", msgs[0].Status, "REC READ")
+	}
+}
+
+// TestParseCMGLPDU_MultiPartExtractsConcat verifies that the concat fields
+// are propagated from the UDH into the SMS struct.
+func TestParseCMGLPDU_MultiPartExtractsConcat(t *testing.T) {
+	input := "+CMGL: 3,0,,29\n" +
+		"00440C914477000000100000624051210000000A0500032A020182C221\n" +
+		"OK\n"
+	msgs, err := parseCMGLPDU(input, "SM")
+	if err != nil {
+		t.Fatalf("parseCMGLPDU: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	m := msgs[0]
+	if m.ConcatRef != 42 || m.ConcatTotal != 2 || m.ConcatPart != 1 {
+		t.Errorf("concat fields: ref=%d total=%d part=%d (want 42/2/1)",
+			m.ConcatRef, m.ConcatTotal, m.ConcatPart)
+	}
+	if m.Text != "ABC" {
+		t.Errorf("Text: got %q, want %q", m.Text, "ABC")
+	}
+}
+
+// TestParseCMGLPDU_NoMessages checks empty output returns no messages.
+func TestParseCMGLPDU_NoMessages(t *testing.T) {
+	msgs, err := parseCMGLPDU("OK\n", "SM")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("expected 0 messages, got %d", len(msgs))
+	}
+}
+
 // ── Helper functions ─────────────────────────────────────────────────────
 
 func isHexChar(c byte) bool {

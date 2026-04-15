@@ -1,6 +1,6 @@
 # ZTE UFI103 SMS Gateway — Status & Quick Reference
 
-*Last updated: 2026-04-14 (Thunderbird logo inline fix)*
+*Last updated: 2026-04-15 (multi-part SMS reassembly + web GUI merge)*
 *Device Serial: 19ce8266*
 
 ---
@@ -40,6 +40,8 @@
 | Email threading | ✅ | Delivery confirmations use matching `Re: Text from +44... [DDMMYY-NNN]` subject |
 | Balance checker race fix | ✅ | "No reply" email no longer fires after response received — goroutine race on `waitDeadline` fixed 2026-04-12 |
 | Thunderbird logo inline fix | ✅ | Logo embedded via `multipart/related` (RFC 2387) — no longer shown as attachment in Thunderbird |
+| Multi-part SMS reassembly | ✅ | UDH parsed in `parseCMGL`; forwarder groups parts by (sender, ref), joins in order, sends single email. 30s timeout for lost parts. Zero latency for single-part messages |
+| Multi-part SMS in web GUI | ✅ | `GetConversation` and `GetRecentMessages` merge concat parts for display — conversation view and inbox both show one message per SMS |
 | Restart page | ✅ | `/restarting` shows spinner, auto-redirects when gateway is back |
 | GitHub security | ✅ | No passwords, phone numbers, or personal emails in repo or history |
 
@@ -159,22 +161,31 @@ adb shell "busybox tail -f /data/sms-gateway/sms-gateway.log"
 
 ```bash
 cd /home/marlowfm/dongle/sms-gateway
-GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -o sms-gateway-arm ./cmd/sms-gateway
+GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -ldflags="-s -w" -o sms-gateway ./cmd/sms-gateway/
 
-# Push binary directly (the running binary can be replaced while running on Android)
-adb push sms-gateway-arm /data/sms-gateway/sms-gateway
+# Push as .new — never push directly over the running binary path
+adb push sms-gateway /data/sms-gateway/sms-gateway.new
 
-# Kill both sms-gateway instances via librank (they run as root, adb shell is uid=2000)
-adb shell "/system/xbin/librank /system/bin/sh -c 'kill \$(busybox ps | busybox awk \"/sms-gateway\$/{print \$1}\")'"
+# Move into place — uid=2000 can do this directly (dir is drwxrwxrwx, files owned by 2000)
+adb shell "mv /data/sms-gateway/sms-gateway.new /data/sms-gateway/sms-gateway"
 
-# start.sh's crash-restart loop picks up the new binary within 10s.
-# Check the log to confirm restart:
-adb shell "busybox tail -5 /data/sms-gateway/sms-gateway.log"
+# Find the gateway PID and kill it via librank (gateway runs as root, needs librank)
+GW_PID=$(adb shell "busybox ps | busybox grep 'sms-gateway$' | busybox awk '{print \$1}'" | tr -d '\r')
+adb shell "echo 'kill $GW_PID' > /data/sms-gateway/_kill.sh && /system/xbin/librank /system/bin/sh /data/sms-gateway/_kill.sh"
+
+# start.sh's crash-restart loop picks up the new binary within ~10s
+adb shell "busybox sleep 20 && busybox tail -8 /data/sms-gateway/sms-gateway.log"
 ```
 
 **IMPORTANT**: The gateway process is owned by root (uid=0, started by the init
 service). The adb shell runs as uid=2000 and cannot kill root-owned processes
-directly — use `librank` as shown above.
+directly — write a kill script and run it via `librank` as shown above.
+
+**IMPORTANT**: Do NOT run `busybox sh /data/sms-gateway/start.sh` from adb shell.
+It will spawn a uid=2000 copy of the gateway that loops crashing on `/dev/smd11:
+permission denied` and pollutes the log. If you accidentally do this, kill the
+rogue process with `adb shell "kill <uid2000_pid>"` (it has the same uid so no
+librank needed).
 
 **IMPORTANT**: Never use raw `adb shell ... cat /dev/smd11` or `dd if=/dev/smd11`
 while the daemon is running — stray readers steal modem responses and starve the daemon.

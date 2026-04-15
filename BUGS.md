@@ -805,6 +805,99 @@ multipart/mixed
 
 ---
 
+## Bug 22: mergeConcatParts Hides Merged Messages in Inbox (Fixed — 2026-04-15)
+
+### Symptom
+After deploying the multi-part SMS web GUI merge feature, the two-part
+DriveTime message was no longer visible in the inbox or conversation view at all —
+both parts disappeared rather than appearing as one merged message.
+
+### Root cause
+`mergeConcatParts` in `db.go` contained a stray `skip[g.firstIdx] = true` line
+inside the body-building loop:
+
+```go
+for p := 1; p <= g.total; p++ {
+    body.WriteString(g.parts[p].Body)
+    skip[g.firstIdx] = true  // ← BUG: marks first-seen part as skipped
+}
+```
+
+`g.firstIdx` is the slice index of the first message encountered with that
+`concat_ref`. In `GetConversation` (ASC order), `firstIdx` points to part 1 —
+the same message that holds the merged body. Marking it skipped meant both
+part 1 (the carrier of the merged body) and part 2+ (skipped by the subsequent
+loop) were excluded from the result, leaving nothing.
+
+In `GetRecentMessages` (DESC order), `firstIdx` happened to point to part 2,
+so the bug was accidentally hidden — part 1 with its merged body survived. The
+conversation view was broken; the inbox appeared to work by coincidence.
+
+`mergeConcatThreads` (conversation view) was written without this bug and was
+correct from the start.
+
+### Fix
+Removed the stray `skip[g.firstIdx] = true` line. Parts 2..N are already
+correctly skipped by the loop that follows; part 1 is modified in-place and
+must not be skipped.
+
+### Files changed
+| File | Change |
+|------|--------|
+| `internal/database/db.go` | `mergeConcatParts` — removed errant skip line from body-building loop |
+
+### Status
+✅ Fixed — 2026-04-15.
+
+---
+
+## Bug 23: RetroactiveConcatAssignment Over-Groups Rapid Conversational Messages (Fixed — 2026-04-15)
+
+### Symptom
+After deploying the retroactive concat assignment feature, the inbox count
+dropped from 69 to ~52. Conversational test messages from `+447734139947`
+(sent in quick succession during development) were being merged into fake
+multi-part SMS groups, hiding them from the inbox.
+
+### Root cause
+`RetroactiveConcatAssignment` used a 5-second sliding window to group
+messages from the same sender arriving close together — treating them as
+multi-part SMS parts received before UDH parsing was implemented. The
+heuristic cannot distinguish between:
+
+1. Genuine multi-part SMS parts (arrive simultaneously, body continues mid-sentence)
+2. Rapid-fire conversational messages from the same sender
+
+17 test messages from `+447734139947` were incorrectly grouped into 6
+pseudo-concat groups (e.g. "Are you getting these? || Apparently not! ||
+One more?" assigned total=3, part=1/2/3). All had `actual == total` so
+`mergeConcatParts` treated them as complete groups and merged them,
+effectively deleting them from the inbox.
+
+An additional scan error in the function (`received_at` scanned as `time.Time`
+instead of `string`) meant the function silently failed on first deploy,
+delaying detection.
+
+### Fix
+1. Added a one-time migration in `Migrate()` to clear the false-positive
+   concat metadata for `+447734139947`.
+2. Removed `RetroactiveConcatAssignment` from the startup path — the heuristic
+   is too unreliable for production use. New messages are handled correctly by
+   UDH parsing; the legitimate old-era splits (giffgaff balance responses,
+   `+447912437900`) were left intact as they have body text that clearly
+   continues across parts.
+
+### Files changed
+| File | Change |
+|------|--------|
+| `internal/database/db.go` | `Migrate()` — added cleanup for false-positive concat assignments |
+| `cmd/sms-gateway/main.go` | Removed `RetroactiveConcatAssignment()` call |
+
+### Status
+✅ Fixed — 2026-04-15.
+
+---
+
 ## Feature Notes (not bugs, but non-obvious discoveries)
 
 ### GiffGaff Named Sender Encoding

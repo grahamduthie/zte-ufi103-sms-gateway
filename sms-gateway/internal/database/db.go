@@ -144,6 +144,19 @@ func (d *DB) Migrate() {
 	d.Exec(`ALTER TABLE messages ADD COLUMN concat_ref INTEGER DEFAULT 0`)
 	d.Exec(`ALTER TABLE messages ADD COLUMN concat_total INTEGER DEFAULT 0`)
 	d.Exec(`ALTER TABLE messages ADD COLUMN concat_part INTEGER DEFAULT 0`)
+	// RetroactiveConcatAssignment (2026-04-15) incorrectly grouped rapid-fire
+	// conversational messages from human senders as if they were multi-part SMS.
+	// Clear the false positives: any sender whose grouped messages have body
+	// text that does NOT continue across parts (i.e. complete sentences each).
+	// The legitimate old-era splits (giffgaff balance responses, +447912437900)
+	// are identified by body text that clearly continues across the part boundary
+	// and are left intact. The heuristic is: if ALL parts in a group have bodies
+	// that end with punctuation or a newline they are likely separate messages.
+	// Simplest safe fix: only clear groups where concat_ref was set but both
+	// parts are from a sender that also has other groups with identical bodies
+	// (test messages). In practice: clear the known false-positive sender.
+	d.Exec(`UPDATE messages SET concat_ref=0, concat_total=0, concat_part=0
+		WHERE sender='+447734139947' AND COALESCE(concat_ref,0) > 0`)
 }
 
 // RetroactiveConcatAssignment assigns concat metadata to old messages that

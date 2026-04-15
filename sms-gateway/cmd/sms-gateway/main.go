@@ -547,11 +547,11 @@ func processSMS(at *atcmd.Session, db *database.DB, bridge *email.Bridge, cfg *c
 
 		if complete {
 			// Join all parts in order and forward as one email.
+			// Parts are concatenated directly with no separator — the network
+			// splits at the 153-char boundary regardless of word/sentence
+			// boundaries, so adding a newline would create spurious line breaks.
 			var joined strings.Builder
-			for i, m := range g.messages {
-				if i > 0 {
-					joined.WriteString("\n")
-				}
+			for _, m := range g.messages {
 				joined.WriteString(m.Body)
 			}
 			combined := database.Message{
@@ -574,12 +574,9 @@ func processSMS(at *atcmd.Session, db *database.DB, bridge *email.Bridge, cfg *c
 			// Incomplete group — check if the first part is older than timeout.
 			oldest := g.messages[0].ReceivedAt
 			if t, err := time.Parse(time.RFC3339, oldest); err == nil && time.Now().UTC().After(t.Add(concatTimeout)) {
-				// Timeout — forward whatever parts we have.
+				// Timeout — forward whatever parts we have, joined directly.
 				var joined strings.Builder
-				for i, m := range g.messages {
-					if i > 0 {
-						joined.WriteString("\n")
-					}
+				for _, m := range g.messages {
 					joined.WriteString(m.Body)
 				}
 				combined := database.Message{

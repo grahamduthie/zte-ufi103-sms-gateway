@@ -120,7 +120,7 @@ func pollAndroidSMS(db *database.DB, bridge *email.Bridge, logger *log.Logger) i
 			ReceivedAt: receivedAt,
 			Body:       body,
 		}
-		if err := bridge.ForwardMessage(msg); err != nil {
+		if _, err := bridge.ForwardMessage(msg); err != nil {
 			logger.Printf("Android SMS: forward error (msg %d): %v", msgID, err)
 			db.IncrementForwardAttempts(msgID)
 		} else {

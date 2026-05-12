@@ -314,7 +314,20 @@ func (d *DB) CreateEmailSession(sessionID string, messageID int64, senderNumber 
 	return err
 }
 
+// LookupSenderBySessionID finds the original SMS sender from the full session ID
+// (e.g. "120526-002"). This is the preferred lookup — exact match, no ambiguity
+// when multiple sessions share the same day prefix.
+func (d *DB) LookupSenderBySessionID(sessionID string) (string, error) {
+	var sender string
+	err := d.QueryRow(
+		`SELECT sender_number FROM email_sessions WHERE session_id = ?`,
+		sessionID,
+	).Scan(&sender)
+	return sender, err
+}
+
 // LookupSenderByPrefix finds the original SMS sender from a reply's session prefix.
+// Kept for backward compatibility with old-format emails; prefer LookupSenderBySessionID.
 func (d *DB) LookupSenderByPrefix(prefix string) (string, error) {
 	var sender string
 	err := d.QueryRow(

@@ -46,7 +46,8 @@ func NewBridge(cfg EmailConfig, db *database.DB, log Logger) *Bridge {
 }
 
 // ForwardMessage sends an SMS as an email to the forwarding address.
-func (b *Bridge) ForwardMessage(msg database.Message) error {
+// Returns the session ID assigned to this message (e.g. "120526-002").
+func (b *Bridge) ForwardMessage(msg database.Message) (string, error) {
 	sessionID := b.db.NextDailySequence(1) // UTC+1 for UK time
 
 	subject := fmt.Sprintf("Text from %s [%s]", msg.Sender, sessionID)
@@ -87,20 +88,20 @@ func (b *Bridge) ForwardMessage(msg database.Message) error {
 			InsecureSkipVerify: true,
 		})
 		if errDial != nil {
-			return fmt.Errorf("tls dial: %w", errDial)
+			return "", fmt.Errorf("tls dial: %w", errDial)
 		}
 	} else {
 		// STARTTLS
 		conn, errDial = net.DialTimeout("tcp", addr, 15*time.Second)
 		if errDial != nil {
-			return fmt.Errorf("dial: %w", errDial)
+			return "", fmt.Errorf("dial: %w", errDial)
 		}
 	}
 	defer conn.Close()
 
 	c, err := smtp.NewClient(conn, b.cfg.SMTPHost)
 	if err != nil {
-		return fmt.Errorf("smtp client: %w", err)
+		return "", fmt.Errorf("smtp client: %w", err)
 	}
 	defer c.Close()
 
@@ -110,33 +111,33 @@ func (b *Bridge) ForwardMessage(msg database.Message) error {
 				ServerName:         b.cfg.SMTPHost,
 				InsecureSkipVerify: true,
 			}); err != nil {
-				return fmt.Errorf("starttls: %w", err)
+				return "", fmt.Errorf("starttls: %w", err)
 			}
 		}
 	}
 
 	if err := c.Auth(auth); err != nil {
-		return fmt.Errorf("auth: %w", err)
+		return "", fmt.Errorf("auth: %w", err)
 	}
 
 	if err := c.Mail(b.cfg.Username); err != nil {
-		return fmt.Errorf("mail from: %w", err)
+		return "", fmt.Errorf("mail from: %w", err)
 	}
 	if err := c.Rcpt(b.cfg.ForwardTo); err != nil {
-		return fmt.Errorf("rcpt to: %w", err)
+		return "", fmt.Errorf("rcpt to: %w", err)
 	}
 
 	w, err := c.Data()
 	if err != nil {
-		return fmt.Errorf("data: %w", err)
+		return "", fmt.Errorf("data: %w", err)
 	}
 	_, err = io.WriteString(w, msgStr)
 	if err != nil {
-		return fmt.Errorf("write data: %w", err)
+		return "", fmt.Errorf("write data: %w", err)
 	}
 	err = w.Close()
 	if err != nil {
-		return fmt.Errorf("close data: %w", err)
+		return "", fmt.Errorf("close data: %w", err)
 	}
 
 	// Record in database
@@ -147,7 +148,7 @@ func (b *Bridge) ForwardMessage(msg database.Message) error {
 		b.log.Printf("Warning: failed to mark forwarded: %v", err)
 	}
 
-	return c.Quit()
+	return sessionID, c.Quit()
 }
 
 // SendDeliveryConfirmation emails Graham when a queued SMS reply is sent or permanently fails.
@@ -553,13 +554,19 @@ func (b *Bridge) processReply(imapMsg *imap.Message, c *client.Client) error {
 		return nil
 	}
 
-	sender, err := b.db.LookupSenderByPrefix(prefix)
+	// Look up by the full session ID (e.g. "120526-002") for an exact match.
+	// Fall back to the date prefix for replies to old-format emails that
+	// pre-date this fix and have no session_id entry.
+	sender, err := b.db.LookupSenderBySessionID(raw)
 	if err != nil {
-		b.log.Printf("IMAP: session prefix %q not found in database", prefix)
+		sender, err = b.db.LookupSenderByPrefix(prefix)
+	}
+	if err != nil {
+		b.log.Printf("IMAP: session %q not found in database", raw)
 		c.Store(imapSeqSet(imapMsg.SeqNum), imap.FormatFlagsOp(imap.AddFlags, true), []interface{}{imap.SeenFlag}, nil)
 		return nil
 	}
-	b.log.Printf("IMAP: matched sender %s for prefix %s", sender, prefix)
+	b.log.Printf("IMAP: matched sender %s for session %s", sender, raw)
 
 	// Extract plain text from the raw MIME, handling multipart properly.
 	// Find the text/plain part by looking for Content-Type: text/plain

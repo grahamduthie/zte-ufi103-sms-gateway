@@ -518,7 +518,7 @@ func processSMS(at *atcmd.Session, db *database.DB, bridge *email.Bridge, cfg *c
 
 	// Forward single-part messages immediately.
 	for _, msg := range singles {
-		if err := bridge.ForwardMessage(msg); err != nil {
+		if _, err := bridge.ForwardMessage(msg); err != nil {
 			logger.Printf("Forward error for message %d: %v", msg.ID, err)
 			db.IncrementForwardAttempts(msg.ID)
 		} else {
@@ -554,19 +554,23 @@ func processSMS(at *atcmd.Session, db *database.DB, bridge *email.Bridge, cfg *c
 			for _, m := range g.messages {
 				joined.WriteString(m.Body)
 			}
+			// Use the first part's real ID so ForwardMessage can create the
+			// email session with a valid FK reference. ForwardMessage marks
+			// part 1 as forwarded; we mark the remaining parts below.
 			combined := database.Message{
-				Sender:   g.messages[0].Sender,
-				Body:     joined.String(),
+				ID:         g.messages[0].ID,
+				Sender:     g.messages[0].Sender,
+				Body:       joined.String(),
 				ReceivedAt: g.messages[0].ReceivedAt,
 			}
-			if err := bridge.ForwardMessage(combined); err != nil {
+			if sessionID, err := bridge.ForwardMessage(combined); err != nil {
 				logger.Printf("Forward error for reassembled concat SMS from %s (ref %s): %v", key.sender, key.ref, err)
 				// Don't increment attempts — retry next cycle with clean body.
 			} else {
-				// Mark all parts as forwarded.
-				seq := db.NextDailySequence(0)
-				for _, m := range g.messages {
-					db.MarkForwarded(m.ID, seq)
+				// ForwardMessage already marked part 1; mark remaining parts
+				// with the same session ID so all parts share the same thread.
+				for _, m := range g.messages[1:] {
+					db.MarkForwarded(m.ID, sessionID)
 				}
 				logger.Printf("Forwarded reassembled %d-part SMS from %s (ref %s) as single email", g.total, key.sender, key.ref)
 			}
@@ -580,17 +584,17 @@ func processSMS(at *atcmd.Session, db *database.DB, bridge *email.Bridge, cfg *c
 					joined.WriteString(m.Body)
 				}
 				combined := database.Message{
-					Sender:   g.messages[0].Sender,
-					Body:     joined.String(),
+					ID:         g.messages[0].ID,
+					Sender:     g.messages[0].Sender,
+					Body:       joined.String(),
 					ReceivedAt: oldest,
 				}
-				if err := bridge.ForwardMessage(combined); err != nil {
+				if sessionID, err := bridge.ForwardMessage(combined); err != nil {
 					logger.Printf("Forward error for timed-out concat SMS from %s (ref %s, %d/%d parts): %v",
 						key.sender, key.ref, len(g.messages), g.total, err)
 				} else {
-					seq := db.NextDailySequence(0)
-					for _, m := range g.messages {
-						db.MarkForwarded(m.ID, seq)
+					for _, m := range g.messages[1:] {
+						db.MarkForwarded(m.ID, sessionID)
 					}
 					logger.Printf("Forwarded timed-out concat SMS from %s (ref %s, %d/%d parts)",
 						key.sender, key.ref, len(g.messages), g.total)
@@ -705,7 +709,7 @@ func runTests(cfg *config.Config, db *database.DB, logger *log.Logger) {
 		ReceivedAt: time.Now().UTC().Format(time.RFC3339),
 		Body:       "Test message from sms-gateway",
 	}
-	if err := bridge.ForwardMessage(testMsg); err != nil {
+	if _, err := bridge.ForwardMessage(testMsg); err != nil {
 		logger.Fatalf("Email forward test failed: %v", err)
 	}
 	logger.Println("Test email sent successfully")

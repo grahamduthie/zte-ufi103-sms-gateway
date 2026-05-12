@@ -1,6 +1,6 @@
 # ZTE UFI103 SMS Gateway — Status & Quick Reference
 
-*Last updated: 2026-04-15 (multi-part SMS fully working — PDU mode, seamless join, correct paragraph spacing)*
+*Last updated: 2026-05-12 (Bug 27 fixed — email replies now correctly routed for multi-part SMS)*
 *Device Serial: 19ce8266*
 
 ---

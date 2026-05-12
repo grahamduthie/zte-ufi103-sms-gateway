@@ -1012,6 +1012,87 @@ natively; `<br>` conversion is unnecessary and harmful alongside it.
 
 ---
 
+## Bug 27: Email Session Not Created for Multi-Part SMS — Wrong Reply Number (Fixed — 2026-05-12)
+
+### Symptom
+Replying to a reassembled multi-part SMS email sent the reply to the wrong
+phone number. The reply went to the sender of a different message from the
+same day instead of the sender of the multi-part SMS.
+
+Real example: a 9-part Stevie Wonder birthday message from +447912437900 arrived
+at 06:49–06:50. The email reply "Very good. We'll give them an airing now!" was
+sent to +447961354955 (who had sent "Tuesday morning" earlier that morning).
+
+### Root cause
+Two independent bugs combined to cause the mismatch.
+
+**Bug 27a — FK constraint prevents session creation:**
+When forwarding a reassembled multi-part SMS, `processSMS` builds a synthetic
+`combined` message struct containing only `Sender`, `Body`, and `ReceivedAt`.
+The `ID` field is left as the Go zero value (`0`). `ForwardMessage` then calls
+`CreateEmailSession(sessionID, msg.ID, sender)` with `msg.ID = 0`. Because the
+database has foreign keys enabled (`_pragma=foreign_keys(ON)`), inserting a row
+into `email_sessions` with `message_id = 0` (no such message exists) fails with:
+
+```
+Warning: failed to create email session: FOREIGN KEY constraint failed
+```
+
+The session (e.g. `120526-002`) is never recorded in the database. The call to
+`MarkForwarded(0, sessionID)` also silently does nothing (no row has `id = 0`).
+
+Additionally, `processSMS` called `db.NextDailySequence(0)` *again* after
+`ForwardMessage` returned, getting a different sequence number (`120526-003`)
+and using that to mark the individual parts as forwarded — mismatching the
+session ID that appeared in the email subject.
+
+**Bug 27b — Prefix-only lookup matches wrong session:**
+`processReply` in `bridge.go` extracts the session ID from the email subject
+(e.g. `"120526-002"`) but then truncates it to just the 6-char date prefix
+(`"120526"`) and calls `LookupSenderByPrefix("120526")`. This query returns
+the first session matching that date prefix — `120526-001`, belonging to
++447961354955 ("Tuesday morning") — not the intended `120526-002`.
+
+Even if session `120526-002` had been created, the prefix-only lookup would
+return a non-deterministic result on any day with more than one incoming message.
+
+Log evidence from 2026-05-12:
+```
+06:50:04 Warning: failed to create email session: FOREIGN KEY constraint failed
+07:37:05 IMAP: found session prefix "120526" in subject (raw="120526-002")
+07:37:05 IMAP: matched sender +447961354955 for prefix 120526   ← wrong
+07:37:05 Queued SMS reply to +447961354955: "Very good. We'll give them an airing now!"
+```
+
+### Fix
+
+**Bug 27a fix (`cmd/sms-gateway/main.go`):**
+Set `ID: g.messages[0].ID` on the `combined` message struct in both the
+complete-group path and the timeout path. This gives `CreateEmailSession` a
+valid FK reference. `ForwardMessage` now returns `(string, error)` (the session
+ID is the string); the caller uses the returned session ID to mark remaining
+parts as forwarded. The duplicate `db.NextDailySequence(0)` call was removed.
+
+**Bug 27b fix (`internal/email/bridge.go`, `internal/database/db.go`):**
+Added `LookupSenderBySessionID(sessionID string)` which queries
+`WHERE session_id = ?` using the full session ID (e.g. `"120526-002"`).
+`processReply` now calls `LookupSenderBySessionID(raw)` first, falling back to
+`LookupSenderByPrefix(prefix)` only for old-format emails already in the inbox
+that pre-date this fix.
+
+### Files changed
+| File | Change |
+|------|--------|
+| `internal/email/bridge.go` | `ForwardMessage` returns `(string, error)`; `processReply` uses `LookupSenderBySessionID` with prefix fallback |
+| `internal/database/db.go` | Added `LookupSenderBySessionID` querying by `session_id` |
+| `cmd/sms-gateway/main.go` | Set `ID: g.messages[0].ID` on combined; use returned sessionID for remaining parts; removed duplicate `NextDailySequence` call |
+| `cmd/sms-gateway/android_sms.go` | Updated `ForwardMessage` caller for new `(string, error)` return |
+
+### Status
+✅ Fixed — 2026-05-12. Deployed same day.
+
+---
+
 ## Feature Notes (not bugs, but non-obvious discoveries)
 
 ### GiffGaff Named Sender Encoding

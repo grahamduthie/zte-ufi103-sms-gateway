@@ -353,11 +353,19 @@ func main() {
 
 	// Signal/network info poller — updates the cache used by web handlers so
 	// they never need to block on the AT mutex. Runs every 30s.
+	// Also watches for prolonged unregistered state and resets the modem radio.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		at.GetSignal()
 		at.GetNetworkInfo()
+
+		const (
+			unregisteredThreshold = 5 * time.Minute
+			resetCooldown         = 10 * time.Minute
+		)
+		var unregisteredSince, lastResetAt time.Time
+
 		t := time.NewTicker(30 * time.Second)
 		defer t.Stop()
 		for {
@@ -373,9 +381,38 @@ func main() {
 					}
 				}()
 				at.GetSignal()
-				at.GetNetworkInfo()
+				info, _ := at.GetNetworkInfo()
+				if info.Registered {
+					unregisteredSince = time.Time{}
+					return
+				}
+				if unregisteredSince.IsZero() {
+					unregisteredSince = time.Now()
+					return
+				}
+				if time.Since(unregisteredSince) < unregisteredThreshold {
+					return
+				}
+				if !lastResetAt.IsZero() && time.Since(lastResetAt) < resetCooldown {
+					return
+				}
+				logger.Printf("Modem unregistered for >%v; issuing AT+CFUN=1,1 radio reset", unregisteredThreshold)
+				at.SendRaw("AT+CFUN=1,1", 5*time.Second)
+				lastResetAt = time.Now()
+				unregisteredSince = time.Time{}
+				select {
+				case <-time.After(30 * time.Second):
+				case <-ctx.Done():
+				}
 			}()
 		}
+	}()
+
+	// mDNS responder — advertises dongle.local on the local network.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runMDNS(ctx, logger)
 	}()
 
 	// Wait for SIGINT or SIGTERM.
